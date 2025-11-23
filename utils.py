@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.api import VAR
-from hmmlearn import hmm
 import math
 
 # --- 1. Simulation (Physiologically Realistic) ---
@@ -186,6 +185,10 @@ def plot_risk(risk_scores, t_axis, thresh=15.0):
 
 def plot_heatmap(residuals, vars_list):
     # Normalize residuals for heatmap (Z-score)
+    # Safety check for empty slice
+    if len(residuals) < 2:
+        return go.Figure()
+
     scaler = StandardScaler()
     res_norm = scaler.fit_transform(residuals)
     
@@ -197,12 +200,16 @@ def plot_heatmap(residuals, vars_list):
         x=np.arange(len(res_norm)),
         y=vars_list,
         colorscale='RdBu',
-        midpoint=0
+        zmid=0  # <--- Corrected argument
     ))
     fig.update_layout(height=300, title="Residual Heatmap (Standardized)", margin=dict(l=20, r=20, t=40, b=20))
     return fig
 
 def plot_pca(df_full):
+    # Safety check
+    if len(df_full) < 2:
+        return go.Figure()
+
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(df_full)
     
