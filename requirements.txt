@@ -1,0 +1,10 @@
+streamlit
+pomegranate==0.14.6
+fastdtw
+plotly
+scikit-learn
+statsmodels
+pandas
+numpy
+matplotlib
+scipy
