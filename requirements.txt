@@ -1,5 +1,5 @@
 streamlit
-pomegranate==0.14.6
+hmmlearn
 fastdtw
 plotly
 scikit-learn
