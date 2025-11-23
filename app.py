@@ -1,113 +1,115 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px  # <--- This was missing
+import plotly.express as px
 import utils
 
 # --- Config ---
-st.set_page_config(page_title="Clinical SPC Monitor", layout="wide")
-st.title("🏥 Real-Time Clinical SPC Monitor")
-st.markdown("Monitoring **Multivariate Physiological Stability** using Vector Autoregression & Mahalanobis Distance.")
+st.set_page_config(page_title="Smart ICU Monitor", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. Load & Simulate Data ---
+st.title("🏥 Smart ICU Monitor: Early Warning System")
+st.markdown("""
+**Status**: Monitoring hemodynamic stability via Multivariate SPC.
+**Goal**: Detect decompensation *before* vitals breach standard alarm limits.
+""")
+
+# --- 1. Load Data ---
 @st.cache_data
 def get_data():
-    # Generate 12 hours (720 mins) of data
     return utils.simulate_patient(mins_total=720)
 
 df_full = get_data()
 VARS = ['HR','SBP','SpO2','RR','PI']
 
-# --- 2. Global Analytics (Pre-computation) ---
-# We compute this on the FULL dataset so the history is valid 
-# even if we only view the last 30 mins.
-
-with st.spinner("Analyzing patient history..."):
-    # A. Fit VAR model on first 120 mins (stable baseline)
+# --- 2. Compute Analytics (Full History) ---
+with st.spinner("Processing physiological signals..."):
+    # Fit model on first 2 hours (assumed baseline)
     residuals_full, cov_est, lag = utils.fit_var_and_residuals_full(df_full[VARS], baseline_window=120)
-    
-    # B. Compute Risk Scores (Mahalanobis)
+    # Compute Risk
     risk_full, cov_inv = utils.compute_mahalanobis_risk(residuals_full, cov_est)
 
-# --- 3. Dashboard Controls ---
+# --- 3. Controls ---
 with st.sidebar:
-    st.header("Monitor Settings")
-    # Slider to control "Current Time" simulation
-    curr_time = st.slider("Simulation Time (min)", min_value=60, max_value=720, value=720)
-    view_window = st.selectbox("View Window", [60, 120, 240, 720], index=1)
-    
-    st.divider()
-    show_pca = st.checkbox("Show PCA State Space", value=True)
-    show_heat = st.checkbox("Show Residual Heatmap", value=True)
-    
-    if st.button("Reset Simulation"):
-        st.cache_data.clear()
-        st.rerun()
+    st.header("Simulation Control")
+    curr_time = st.slider("Time Elapsed (min)", 60, 720, 720)
+    view_window = st.selectbox("Zoom Window (min)", [60, 120, 240, 720], index=2)
+    st.info("Tip: Slide 'Time Elapsed' back to min 400 to see the stable state, then forward to 600 to watch the shock develop.")
 
-# --- 4. Slice Data for View ---
-# Determine start/end indices
+# --- 4. Data Slicing ---
 start_idx = max(0, curr_time - view_window)
 end_idx = curr_time
-
-# Slice the Dataframes and Arrays
 df_view = df_full.iloc[start_idx:end_idx].reset_index(drop=True)
 risk_view = risk_full[start_idx:end_idx]
 resid_view = residuals_full[start_idx:end_idx]
 t_axis = np.arange(start_idx, end_idx)
 
-# --- 5. KPI Header ---
-# Get the very last value from the selected time
-last_row = df_full.iloc[curr_time-1]
-prev_row = df_full.iloc[curr_time-2] if curr_time > 1 else last_row
+# --- 5. Alert Banner ---
+current_risk = risk_full[curr_time-1]
+if current_risk < 15:
+    st.success(f"✅ PATIENT STABLE (Risk Score: {current_risk:.1f})")
+elif current_risk < 30:
+    st.warning(f"⚠️ WARNING: PHYSIOLOGICAL DEVIATION (Risk Score: {current_risk:.1f})")
+else:
+    st.error(f"🚨 CRITICAL INSTABILITY DETECTED (Risk Score: {current_risk:.1f})")
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Heart Rate", f"{last_row['HR']:.0f}", f"{last_row['HR']-prev_row['HR']:.1f}")
-c2.metric("SBP", f"{last_row['SBP']:.0f}", f"{last_row['SBP']-prev_row['SBP']:.1f}", delta_color="inverse")
-c3.metric("SpO2", f"{last_row['SpO2']:.1f}%", f"{last_row['SpO2']-prev_row['SpO2']:.1f}")
-c4.metric("Resp Rate", f"{last_row['RR']:.0f}", f"{last_row['RR']-prev_row['RR']:.1f}")
-c5.metric("Risk Score", f"{risk_full[curr_time-1]:.1f}", delta_color="off" if risk_full[curr_time-1] < 20 else "inverse")
+# --- 6. Vitals & Risk (The "What") ---
+c1, c2 = st.columns([2, 1])
 
-# --- 6. Main Plots ---
-st.subheader("Hemodynamic Trends")
-fig_vitals = utils.plot_vitals(df_view, t_axis)
-st.plotly_chart(fig_vitals, use_container_width=True)
+with c1:
+    st.subheader("1. Hemodynamic Trends")
+    fig_vitals = utils.plot_vitals(df_view, t_axis)
+    st.plotly_chart(fig_vitals, use_container_width=True)
 
-st.subheader("Integrated Risk Analysis")
-fig_risk = utils.plot_risk(risk_view, t_axis)
-st.plotly_chart(fig_risk, use_container_width=True)
-
-# --- 7. Advanced Analytics ---
-col1, col2 = st.columns(2)
-
-if show_pca:
-    with col1:
-        # Show PCA trajectory up to current time
-        fig_pca = utils.plot_pca(df_full.iloc[:curr_time])
-        st.plotly_chart(fig_pca, use_container_width=True)
-
-if show_heat:
-    with col2:
-        fig_heat = utils.plot_heatmap(resid_view, VARS)
-        st.plotly_chart(fig_heat, use_container_width=True)
-
-# --- 8. Contribution Analysis (Why is risk high?) ---
-if risk_full[curr_time-1] > 10:
-    st.warning(f"High Anomaly Score Detected at min {curr_time}")
-    st.markdown("**Root Cause Contribution (Last Minute):**")
+with c2:
+    st.subheader("2. Integrated Instability")
+    fig_risk = utils.plot_risk_enhanced(risk_view, t_axis)
+    st.plotly_chart(fig_risk, use_container_width=True)
     
-    # Calculate contribution: w_i = r_i * (S^-1 * r)_i
-    # Only for the last point
+    # Mini-KPIs
+    last = df_full.iloc[curr_time-1]
+    c2a, c2b = st.columns(2)
+    c2a.metric("Shock Index", f"{(last['HR']/last['SBP']):.2f}", delta_color="inverse")
+    c2b.metric("Perfusion Index", f"{last['PI']:.2f}", delta_color="normal")
+
+# --- 7. Root Cause Analysis (The "Why") ---
+st.divider()
+col_left, col_right = st.columns(2)
+
+with col_left:
+    st.subheader("3. Root Cause Analysis (Contribution)")
+    # Calculate contributions for the LAST minute only
     r_t = residuals_full[curr_time-1]
-    # Element-wise multiply residual by (InvCov dot Residual)
+    # Contribution = residual * weighted_residual
     contrib = r_t * (cov_inv @ r_t)
-    # Normalize
-    contrib_pct = (contrib / np.sum(np.abs(contrib))) * 100
+    # Convert to meaningful percentage
+    contrib_abs = np.abs(contrib)
+    contrib_norm = (contrib_abs / np.sum(contrib_abs)) * 100
     
-    contrib_df = pd.DataFrame({
-        'Metric': VARS,
-        'Contribution (%)': contrib_pct
-    })
+    # Color code: Red if residual was positive (High), Blue if negative (Low)
+    # This tells us: "HR contributing 40% because it is HIGH"
+    colors = ['#ef553b' if r_t[i] > 0 else '#636efa' for i in range(5)]
     
-    fig_bar = px.bar(contrib_df, x='Metric', y='Contribution (%)', 
-                     color='Contribution (%)', color_continuous_scale='Redor')
+    fig_bar = go.Figure(go.Bar(
+        x=VARS, 
+        y=contrib_norm,
+        marker_color=colors,
+        text=[f"{val:.1f}%" for val in contrib_norm],
+        textposition='auto'
+    ))
+    fig_bar.update_layout(
+        title=f"Which vitals are driving the alarm? (t={curr_time})",
+        yaxis_title="Contribution to Risk (%)",
+        height=350
+    )
     st.plotly_chart(fig_bar, use_container_width=True)
+    st.caption("Red = Variable is higher than predicted. Blue = Variable is lower than predicted.")
+
+with col_right:
+    st.subheader("4. State Space Trajectory")
+    fig_pca = utils.plot_pca_clinical(df_full, curr_time, baseline_window=120)
+    st.plotly_chart(fig_pca, use_container_width=True)
+
+# --- 8. Heatmap (Deep Dive) ---
+st.subheader("5. Clinical Deviation Matrix (Deep Dive)")
+fig_heat = utils.plot_deviation_matrix(resid_view, VARS)
+st.plotly_chart(fig_heat, use_container_width=True)
