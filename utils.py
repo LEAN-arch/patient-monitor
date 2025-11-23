@@ -1,12 +1,11 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from statsmodels.tsa.api import VAR
-from pomegranate import HiddenMarkovModel, NormalDistribution
+from hmmlearn import hmm  # <--- Switched library
 from fastdtw import fastdtw
 from scipy.spatial.distance import euclidean
 import math
@@ -94,9 +93,14 @@ def mewma_T2(df_vars, baseline_end=180, lam_v=0.05):
     return T2
 
 def fit_hmm_multivariate(df_vars, n_states=3):
+    """
+    Updated to use hmmlearn instead of pomegranate.
+    """
     data = df_vars.fillna(method='bfill').values
-    model = HiddenMarkovModel.from_samples(NormalDistribution, n_components=n_states, X=data, algorithm='baum-welch', n_jobs=1)
-    states = np.array(model.predict(data))
+    # GaussianHMM with diagonal covariance is standard for this type of data
+    model = hmm.GaussianHMM(n_components=n_states, covariance_type="diag", n_iter=100, random_state=42)
+    model.fit(data)
+    states = model.predict(data)
     return states
 
 # --- 3. Visualization ---
