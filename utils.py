@@ -10,130 +10,110 @@ import math
 # --- 1. Simulation (Physiologically Realistic) ---
 def simulate_patient(mins_total=720, seed=42):
     """
-    Simulates a patient progressing from stable -> respiratory distress -> shock.
+    Simulates a patient progressing from stable -> respiratory distress -> decompensated shock.
     """
     np.random.seed(seed)
     
     # 1. Define Baseline (Stable Patient)
     # HR, SBP, SpO2, RR, PI
-    means = np.array([72., 120., 98., 14., 4.0])
-    stds  = np.array([4.,  8.,   0.5, 1.5, 0.5])
+    means = np.array([75., 120., 98., 16., 3.5])
+    stds  = np.array([3.,  5.,   0.5, 1.0, 0.5])
     
-    # Correlation Matrix (Physiological links)
-    # HR/SBP neg correlated (baroreflex), HR/RR pos correlated
+    # Physiological correlations
     corr = np.array([
-        [ 1.0, -0.2, -0.1,  0.4, -0.1], # HR
-        [-0.2,  1.0,  0.1, -0.1,  0.3], # SBP
+        [ 1.0, -0.2, -0.1,  0.5, -0.2], # HR
+        [-0.2,  1.0,  0.1, -0.1,  0.4], # SBP
         [-0.1,  0.1,  1.0, -0.2, -0.1], # SpO2
-        [ 0.4, -0.1, -0.2,  1.0, -0.1], # RR
-        [-0.1,  0.3, -0.1, -0.1,  1.0]  # PI
+        [ 0.5, -0.1, -0.2,  1.0, -0.2], # RR
+        [-0.2,  0.4, -0.1, -0.2,  1.0]  # PI
     ])
     cov = np.outer(stds, stds) * corr
     
-    # 2. Generate VAR(1) Process (Baseline)
-    phi = 0.6 # Autocorrelation strength
+    # 2. Generate VAR(1) Baseline
+    phi = 0.7 
     data = np.zeros((mins_total, 5))
-    data[0] = means + np.random.multivariate_normal(np.zeros(5), cov)
+    data[0] = means
     
-    noise_cov = cov * (1 - phi**2) # Scale noise to maintain variance
+    noise_cov = cov * (1 - phi**2)
     
     for t in range(1, mins_total):
         noise = np.random.multivariate_normal(np.zeros(5), noise_cov)
-        # Mean reversion formula
         data[t] = means + phi * (data[t-1] - means) + noise
 
     df = pd.DataFrame(data, columns=['HR','SBP','SpO2','RR','PI'])
     
     # 3. Inject Clinical Events
     
-    # Event A: Minor Desaturation (Transient) at min 200
-    # SpO2 drops, HR compensates slightly
-    t_desat = 200
-    df.loc[t_desat:t_desat+15, 'SpO2'] -= 6.0 
-    df.loc[t_desat:t_desat+15, 'HR'] += 8.0
+    # Event A: Transient Hypoxia (Mucus Plug / Position change) at min 180
+    # SpO2 drops sharply, HR rises to compensate, then resolves
+    t_event = 180
+    df.loc[t_event:t_event+20, 'SpO2'] -= 8.0 
+    df.loc[t_event:t_event+20, 'HR'] += 15.0
     
-    # Event B: Progressive Shock (Decompensation) starting min 450
-    # HR rises, SBP falls (narrowing pulse pressure), RR rises, PI falls
-    t_shock = 450
+    # Event B: Decompensated Shock starting at min 420
+    t_shock = 420
     for t in range(t_shock, mins_total):
-        progress = (t - t_shock) / (mins_total - t_shock) # 0 to 1
-        intensity = progress * 1.2 # Scaling factor
+        # Non-linear progression (gets worse faster)
+        progress = ((t - t_shock) / (mins_total - t_shock)) ** 1.5
         
-        df.at[t, 'HR']   += 35.0 * intensity  # Tachycardia -> 110+
-        df.at[t, 'SBP']  -= 30.0 * intensity  # Hypotension -> 90
-        df.at[t, 'RR']   += 12.0 * intensity  # Tachypnea -> 26
-        df.at[t, 'PI']   -= 2.5 * intensity   # Vasoconstriction -> <1.5
-        df.at[t, 'SpO2'] -= 4.0 * intensity   # Mild hypoxia -> 94
+        # Clinical Pattern: Shock
+        # 1. HR rises (Compensatory Tachycardia)
+        df.at[t, 'HR']   += 50.0 * progress
+        # 2. SBP drops (Hypotension - late sign)
+        df.at[t, 'SBP']  -= 40.0 * progress
+        # 3. RR rises (Metabolic Acidosis compensation)
+        df.at[t, 'RR']   += 14.0 * progress
+        # 4. PI drops (Peripheral vasoconstriction - early sign)
+        df.at[t, 'PI']   -= 3.0 * progress
+        # 5. SpO2 drops eventually
+        df.at[t, 'SpO2'] -= 6.0 * progress
         
-        # Add jitter to the trend
-        df.iloc[t] += np.random.normal(0, 0.5, 5)
+        # Add stress noise (variability increases in instability)
+        df.iloc[t] += np.random.normal(0, 1.0 * progress, 5)
 
-    # 4. Post-processing and Cleanup
-    # Clamp SpO2 <= 100
-    df['SpO2'] = df['SpO2'].clip(upper=100.0)
-    # Ensure SBP > 40
-    df['SBP'] = df['SBP'].clip(lower=40.0)
+    # Clamps
+    df['SpO2'] = df['SpO2'].clip(0, 100)
+    df['SBP'] = df['SBP'].clip(40, 250)
+    df['PI'] = df['PI'].clip(0.1, 20)
     
     return df
 
-# --- 2. Analytics (Robust) ---
+# --- 2. Analytics ---
 
-def fit_var_and_residuals_full(df_full, baseline_window=180):
-    """
-    Fits VAR on the baseline period, then computes residuals for the ENTIRE dataset.
-    This ensures we don't lose data when slicing views.
-    """
-    # Fit only on the "stable" beginning
+def fit_var_and_residuals_full(df_full, baseline_window=120):
+    """ Fits VAR on stable baseline, predicts residuals for full history. """
     train_data = df_full.iloc[:baseline_window]
     model = VAR(train_data)
     try:
         results = model.fit(maxlags=1)
         lag = results.k_ar
         
-        # Apply model to full dataset to get residuals
-        # VAR results.resid only gives residuals for the training set.
-        # We must manually compute residuals for the whole series using the coefficients.
-        
-        # Get coefficients (A) and intercept (c)
-        # Equation: X_t = c + A * X_{t-1} + e_t
-        c = results.params[0, :] # intercepts
-        A = results.params[1:, :] # coefficient matrix
+        c = results.params[0, :]
+        A = results.params[1:, :]
         
         data_val = df_full.values
         residuals = np.zeros_like(data_val)
         
-        # Manual prediction for t=1 to end
         for t in range(lag, len(data_val)):
             pred = c + np.dot(data_val[t-1], A)
             residuals[t] = data_val[t] - pred
             
-        # Covariance of residuals (from training set)
         cov_est = np.cov(residuals[lag:baseline_window].T)
-        
         return residuals, cov_est, lag
         
-    except Exception as e:
-        print(f"VAR Fit failed: {e}")
-        # Fallback: just subtract mean
-        return (df_full - df_full.mean()).values, np.eye(df_full.shape[1]), 0
+    except Exception:
+        return (df_full - df_full.mean()).values, np.eye(5), 0
 
-def compute_mahalanobis_risk(residuals, cov_est, lam=0.1):
-    """
-    Computes Mahalanobis distance on residuals, then applies EWMA smoothing.
-    """
-    # Inverse Covariance with Regularization (prevents singular matrix crashes)
+def compute_mahalanobis_risk(residuals, cov_est, lam=0.15):
+    """ Computes Mahalanobis Distance + EWMA Smoothing. """
     try:
         inv_cov = np.linalg.pinv(cov_est + 1e-6 * np.eye(cov_est.shape[0]))
     except:
         inv_cov = np.eye(cov_est.shape[0])
         
-    # Calculate D^2 for every point
-    # D^2 = r^T * S^-1 * r
-    # Optimized calculation using einstein summation or diagonal dot
-    # D2 shape: (N,)
     D2 = np.sum((residuals @ inv_cov) * residuals, axis=1)
     
-    # Apply EWMA Smoothing to D2 to get "Risk Score"
+    # EWMA Smoothing
     z = np.zeros_like(D2)
     z[0] = D2[0]
     for t in range(1, len(D2)):
@@ -141,85 +121,145 @@ def compute_mahalanobis_risk(residuals, cov_est, lam=0.1):
         
     return z, inv_cov
 
-# --- 3. Visualization ---
+# --- 3. Enhanced Visualization (Clinical Focus) ---
 
 def plot_vitals(df_view, t_axis):
+    """ Plots HR/SBP/SpO2 with clear reference cues. """
     fig = go.Figure()
     
-    # HR and SBP
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['HR'], name='HR (bpm)', 
-                             line=dict(color='#ef553b', width=2)))
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SBP'], name='SBP (mmHg)', 
-                             line=dict(color='#636efa', width=2)))
-    
-    # SpO2 on secondary axis
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SpO2'], name='SpO2 (%)', 
-                             line=dict(color='#00cc96', width=2, dash='dot'), yaxis='y2'))
+    # Highlight "Normal" HR Range (60-100)
+    fig.add_shape(type="rect",
+        x0=t_axis[0], x1=t_axis[-1], y0=60, y1=100,
+        fillcolor="green", opacity=0.05, layer="below", line_width=0,
+    )
+
+    fig.add_trace(go.Scatter(x=t_axis, y=df_view['HR'], name='HR (bpm)', line=dict(color='#d62728', width=2.5)))
+    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SBP'], name='SBP (mmHg)', line=dict(color='#1f77b4', width=2)))
+    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SpO2'], name='SpO2 (%)', yaxis='y2', line=dict(color='#2ca02c', width=2, dash='dot')))
     
     fig.update_layout(
-        height=400,
-        xaxis_title="Time (minutes)",
-        yaxis=dict(title="Hemodynamics", range=[40, 160]),
-        yaxis2=dict(title="SpO2", overlaying='y', side='right', range=[85, 101], showgrid=False),
-        legend=dict(orientation="h", y=1.1),
-        margin=dict(l=20, r=20, t=20, b=20),
+        height=380,
+        margin=dict(l=10, r=10, t=30, b=10),
+        legend=dict(orientation="h", y=1.1, x=0),
+        yaxis=dict(title="Hemodynamics", range=[40, 180], showgrid=True, gridcolor='lightgrey'),
+        yaxis2=dict(title="SpO2", overlaying='y', side='right', range=[80, 101], showgrid=False),
+        plot_bgcolor='white',
         hovermode="x unified"
     )
     return fig
 
-def plot_risk(risk_scores, t_axis, thresh=15.0):
+def plot_risk_enhanced(risk_scores, t_axis):
+    """ Risk plot with colored semantic zones (Safe/Warning/Critical). """
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=t_axis, y=risk_scores, fill='tozeroy', 
-                             name='Risk Index', line=dict(color='purple')))
     
-    # Add threshold line
-    fig.add_hline(y=thresh, line_dash="dash", annotation_text="Warning Threshold")
+    # Define semantic zones
+    max_val = max(50, np.max(risk_scores) * 1.1)
+    
+    # Green Zone (Stable)
+    fig.add_hrect(y0=0, y1=15, fillcolor="green", opacity=0.1, layer="below", line_width=0, annotation_text="STABLE", annotation_position="top left")
+    # Yellow Zone (Warning)
+    fig.add_hrect(y0=15, y1=30, fillcolor="orange", opacity=0.1, layer="below", line_width=0, annotation_text="WARNING", annotation_position="top left")
+    # Red Zone (Critical)
+    fig.add_hrect(y0=30, y1=max_val, fillcolor="red", opacity=0.1, layer="below", line_width=0, annotation_text="CRITICAL", annotation_position="top left")
+
+    fig.add_trace(go.Scatter(x=t_axis, y=risk_scores, mode='lines', name='Risk Index', line=dict(color='black', width=2)))
     
     fig.update_layout(
         height=250,
-        title="Multivariate Anomaly Score (Integrated Risk)",
-        margin=dict(l=20, r=20, t=40, b=20),
-        yaxis_title="Mahalanobis Distance (Smoothed)"
+        title="<b>Integrated Physiological Instability Score</b>",
+        margin=dict(l=10, r=10, t=40, b=10),
+        yaxis=dict(title="Deviation Magnitude", range=[0, max_val]),
+        showlegend=False,
+        plot_bgcolor='white'
     )
     return fig
 
-def plot_heatmap(residuals, vars_list):
-    # Normalize residuals for heatmap (Z-score)
-    # Safety check for empty slice
-    if len(residuals) < 2:
-        return go.Figure()
+def plot_pca_clinical(df_full, curr_time, baseline_window=120):
+    """ 
+    PCA fitted ONLY on baseline. 
+    This makes (0,0) the 'Safe Zone'. Deviation from center = Clinical Instability.
+    """
+    if len(df_full) < 2: return go.Figure()
+    
+    # 1. Fit Scaler & PCA on BASELINE ONLY (The "Stable" definition)
+    baseline_data = df_full.iloc[:baseline_window]
+    scaler = StandardScaler().fit(baseline_data)
+    pca = PCA(n_components=2).fit(scaler.transform(baseline_data))
+    
+    # 2. Transform the FULL trajectory
+    X_scaled = scaler.transform(df_full.iloc[:curr_time])
+    coords = pca.transform(X_scaled)
+    
+    # 3. Plot
+    fig = go.Figure()
+    
+    # Draw "Safe Zone" (Circle at 0,0)
+    fig.add_shape(type="circle",
+        xref="x", yref="y", x0=-2, y0=-2, x1=2, y1=2,
+        line_color="green", fillcolor="green", opacity=0.1, line_dash="dot"
+    )
+    fig.add_annotation(x=0, y=0, text="Safe Baseline", showarrow=False, font=dict(color="green"))
 
+    # Draw Trajectory
+    # Color by time (fading) to show direction
+    colors = np.arange(len(coords))
+    
+    fig.add_trace(go.Scatter(
+        x=coords[:,0], y=coords[:,1],
+        mode='markers+lines',
+        marker=dict(
+            size=5, 
+            color=colors, 
+            colorscale='Turbo', 
+            colorbar=dict(title="Time (min)")
+        ),
+        line=dict(color='gray', width=0.5),
+        name='Patient State'
+    ))
+    
+    # Highlight Current State
+    fig.add_trace(go.Scatter(
+        x=[coords[-1,0]], y=[coords[-1,1]],
+        mode='markers+text',
+        marker=dict(size=15, color='red', symbol='x'),
+        text=["CURRENT"], textposition="top center",
+        name='Current'
+    ))
+
+    fig.update_layout(
+        height=400,
+        title="<b>Hemodynamic State Space</b><br><i>(Distance from center = Instability)</i>",
+        xaxis=dict(title="Principal Component 1", showgrid=True),
+        yaxis=dict(title="Principal Component 2", showgrid=True),
+        margin=dict(l=10, r=10, t=50, b=10),
+        plot_bgcolor='white'
+    )
+    return fig
+
+def plot_deviation_matrix(residuals, vars_list):
+    """ Heatmap showing Directionality of deviation (Red=High, Blue=Low). """
+    if len(residuals) < 2: return go.Figure()
+
+    # Standardize residuals (Z-score)
     scaler = StandardScaler()
     res_norm = scaler.fit_transform(residuals)
     
-    # Cap values for better visualization contrast
-    res_norm = np.clip(res_norm, -3, 3)
+    # Clip for readability (-4 to +4 sigma)
+    res_norm = np.clip(res_norm, -4, 4)
     
     fig = go.Figure(data=go.Heatmap(
         z=res_norm.T,
         x=np.arange(len(res_norm)),
         y=vars_list,
-        colorscale='RdBu',
-        zmid=0  # <--- Corrected argument
+        colorscale='RdBu_r', # Red = High, Blue = Low
+        zmid=0,
+        colorbar=dict(title="Std Dev<br>Deviation")
     ))
-    fig.update_layout(height=300, title="Residual Heatmap (Standardized)", margin=dict(l=20, r=20, t=40, b=20))
-    return fig
-
-def plot_pca(df_full):
-    # Safety check
-    if len(df_full) < 2:
-        return go.Figure()
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(df_full)
     
-    pca = PCA(n_components=2)
-    components = pca.fit_transform(X_scaled)
-    
-    fig = px.scatter(x=components[:,0], y=components[:,1], 
-                     color=np.arange(len(components)),
-                     color_continuous_scale='Turbo',
-                     labels={'color': 'Time'},
-                     title="PCA Trajectory (Patient State Space)")
-    fig.update_layout(height=350)
+    fig.update_layout(
+        height=300, 
+        title="<b>Clinical Deviation Matrix</b><br><i>(Red = Unexpectedly High, Blue = Unexpectedly Low)</i>",
+        margin=dict(l=10, r=10, t=50, b=10),
+        plot_bgcolor='white'
+    )
     return fig
