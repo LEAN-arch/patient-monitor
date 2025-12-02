@@ -181,7 +181,7 @@ def plot_frank_starling_vector(df, curr_time):
     fig.add_trace(go.Scatter(x=data['DBP'], y=data['PP'], mode='lines', 
                              line=dict(color=THEME['flow'], width=3), name='History'))
     
-    # Current Head (Vector Tip)
+    # Current Vector Tip (using Marker instead of Arrow property to fix error)
     fig.add_trace(go.Scatter(x=[data['DBP'].iloc[-1]], y=[data['PP'].iloc[-1]], mode='markers',
                              marker=dict(color=THEME['flow'], size=12, symbol='triangle-up'), name='Current'))
     
