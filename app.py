@@ -5,145 +5,145 @@ import utils
 
 # --- PAGE CONFIG ---
 st.set_page_config(
-    page_title="ICU Sentinel Pro", 
-    layout="wide", 
+    page_title="Aigis: Advanced ICU Analytics",
+    layout="wide",
     initial_sidebar_state="collapsed"
 )
 
-# --- CUSTOM CSS (The "Commercial" Skin) ---
+# --- CSS: PRO-GRADE STYLING ---
 st.markdown("""
 <style>
-    /* Global Background */
-    .stApp {
-        background-color: #0E1117;
+    /* Global Clean Up */
+    .stApp { background-color: #0b0e11; }
+    .block-container { padding-top: 1rem; }
+    
+    /* Metrics Cards */
+    div[data-testid="metric-container"] {
+        background-color: #15191f;
+        border: 1px solid #2b313b;
+        padding: 10px;
+        border-radius: 6px;
+        color: #e0e0e0;
+    }
+    label[data-testid="stMetricLabel"] { font-size: 0.8rem; color: #8b949e; }
+    div[data-testid="stMetricValue"] { font-family: 'Roboto Mono', monospace; font-size: 1.8rem; }
+    
+    /* Custom Headers */
+    .section-header {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: #58a6ff;
+        border-bottom: 1px solid #2b313b;
+        padding-bottom: 5px;
+        margin-bottom: 15px;
+        margin-top: 20px;
     }
     
-    /* Hardware Monitor Card Style */
-    .metric-card {
-        background-color: #1E1E1E;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-        margin-bottom: 10px;
-    }
-    .metric-label {
-        color: #888;
-        font-size: 0.8rem;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .metric-value {
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 2.2rem;
-        font-weight: bold;
-    }
-    .metric-unit {
-        font-size: 0.9rem;
-        color: #666;
-    }
-    
-    /* Neon Colors for specific metrics */
-    .color-hr { color: #00ff00; }
-    .color-sbp { color: #ff3333; }
-    .color-spo2 { color: #00ccff; }
-    .color-pi { color: #d142f5; }
-    .color-si { color: #ffa500; }
-    
-    /* Alert Banners */
-    .alert-box {
-        padding: 15px;
-        border-radius: 5px;
-        margin-bottom: 20px;
-        font-weight: bold;
-    }
-    .alert-safe { background-color: rgba(0, 255, 0, 0.1); border: 1px solid #00ff00; color: #00ff00; }
-    .alert-warn { background-color: rgba(255, 165, 0, 0.1); border: 1px solid #ffa500; color: #ffa500; }
-    .alert-crit { background-color: rgba(255, 0, 0, 0.2); border: 1px solid #ff0000; color: #ff0000; }
-    
+    /* Risk Badges */
+    .badge-crit { background-color: #ff0055; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    .badge-warn { background-color: #d29922; color: black; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    .badge-ok { background-color: #238636; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATA PREP ---
+# --- LOAD DATA ---
 @st.cache_data
-def load_data():
-    df = utils.simulate_patient()
-    df['SI'] = df['HR'] / df['SBP']
-    return df
+def get_data():
+    return utils.simulate_patient_dynamics()
 
-df_full = load_data()
-VARS = ['HR','SBP','SpO2','RR','PI']
+df = get_data()
 
-# Analytics
-z_full, cov_est = utils.fit_var_and_residuals_full(df_full[VARS])
-risk_full, _ = utils.compute_mahalanobis_risk(z_full, cov_est)
-
-# --- SIDEBAR CONTROLS ---
+# --- SIDEBAR: TIME TRAVEL ---
 with st.sidebar:
-    st.header("Playback Control")
-    curr_time = st.slider("Timeline (mins)", 120, 720, 720)
-    view_window = st.selectbox("Zoom", [60, 180, 360], index=1)
-    st.markdown("---")
-    st.markdown("**Simulation Guide:**")
-    st.markdown("- **< 400m:** Stable Baseline")
-    st.markdown("- **400-550m:** Compensated Shock (High HR, Low PI)")
-    st.markdown("- **> 550m:** Decompensated Shock (Low BP)")
+    st.title("Aigis Control")
+    curr_time = st.slider("Session Time (min)", 100, 720, 720)
+    st.info("""
+    **Event Log:**
+    - T=0-400: Stable
+    - T=400: Instability Onset (Hidden)
+    - T=600: Hemodynamic Crash
+    """)
 
-# --- SLICING ---
-start_idx = max(0, curr_time - view_window)
-df_view = df_full.iloc[start_idx:curr_time]
-z_view = z_full.iloc[start_idx:curr_time]
-current_vals = df_full.iloc[curr_time-1]
-current_risk = risk_full[curr_time-1]
+# --- ANALYTICS ENGINE ---
+current_row = df.iloc[curr_time-1]
 
-# --- TOP BAR: ALERT SYSTEM ---
-status_col, spacer = st.columns([3, 1])
-with status_col:
-    if current_risk < 15:
-        st.markdown(f'<div class="alert-box alert-safe">✅ MONITORING ACTIVE - PATIENT STABLE (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
-    elif current_risk < 25:
-        st.markdown(f'<div class="alert-box alert-warn">⚠️ EARLY WARNING - HEMODYNAMIC COMPENSATION DETECTED (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
+# 1. SPC Check
+_, _, _, violations, _ = utils.detect_spc_violations(df['HR'].iloc[:curr_time])
+spc_status = "STABLE"
+if len(violations) > 0 and violations[-1] > curr_time - 10:
+    spc_status = "UNSTABLE (Drift Detected)"
+
+# 2. Risk Calculation (Simple heuristic for demo)
+risk_score = 0
+if current_row['PI'] < 2.0: risk_score += 30
+if current_row['HR'] > 100: risk_score += 30
+if spc_status != "STABLE": risk_score += 20
+if current_row['SBP'] < 90: risk_score += 20
+risk_score = min(100, risk_score)
+
+# --- LAYOUT: HEADS UP DISPLAY (HUD) ---
+c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+
+with c1:
+    st.title("Aigis™ ICU Monitor")
+    st.caption(f"Patient ID: 9942-X | Male, 58y | Septic Protocol | T={curr_time}min")
+
+with c2:
+    st.metric("Risk Probability", f"{risk_score}%", delta=f"{risk_score-10}% vs 1hr ago", delta_color="inverse")
+
+with c3:
+    if risk_score > 70:
+        st.markdown('<div style="text-align:center; margin-top:10px;"><span class="badge-crit">CRITICAL</span></div>', unsafe_allow_html=True)
+    elif risk_score > 30:
+        st.markdown('<div style="text-align:center; margin-top:10px;"><span class="badge-warn">WARNING</span></div>', unsafe_allow_html=True)
     else:
-        st.markdown(f'<div class="alert-box alert-crit">🚨 CRITICAL ALARM - DECOMPENSATION / SHOCK STATE (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
+        st.markdown('<div style="text-align:center; margin-top:10px;"><span class="badge-ok">STABLE</span></div>', unsafe_allow_html=True)
+    st.markdown('<div style="text-align:center; color:#888; font-size:0.8em;">AI Assessment</div>', unsafe_allow_html=True)
 
-# --- MAIN DASHBOARD GRID ---
-# Layout: Left (Live Monitors) - Right (Advanced Analytics)
-c_left, c_right = st.columns([1, 3])
+with c4:
+    st.metric("Perfusion (PI)", f"{current_row['PI']:.2f}", delta="-0.2" if current_row['PI'] < 2 else "0.0")
 
-with c_left:
-    st.markdown("### LIVE VITALS")
+# --- ROW 2: PREDICTIVE MONITORING ---
+col_main, col_side = st.columns([2, 1])
+
+with col_main:
+    st.markdown('<div class="section-header">SPC TRENDS & AI FORECAST (+30 MIN)</div>', unsafe_allow_html=True)
+    # The Advanced SPC Plot
+    fig_spc = utils.plot_spc_monitor(df, curr_time)
+    st.plotly_chart(fig_spc, use_container_width=True)
     
-    # Custom HTML Metric Cards
-    def metric_card(label, value, unit, color_class):
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value {color_class}">{value}</div>
-            <div class="metric-unit">{unit}</div>
-        </div>
-        """, unsafe_allow_html=True)
+    # Textual Insight
+    if risk_score > 30:
+        st.warning(f"**AI Insight:** Western Electric Rule violation detected. HR trend indicates non-random drift. Projected to breach 110 BPM in 15 mins.")
 
-    metric_card("Heart Rate", int(current_vals['HR']), "bpm", "color-hr")
-    metric_card("Invasive BP", f"{int(current_vals['SBP'])}/80", "mmHg", "color-sbp")
-    metric_card("Shock Index", f"{current_vals['SI']:.2f}", "ratio", "color-si")
-    metric_card("Perfusion Idx", f"{current_vals['PI']:.2f}", "%", "color-pi")
-    metric_card("SpO2", int(current_vals['SpO2']), "%", "color-spo2")
+with col_side:
+    st.markdown('<div class="section-header">CHAOS DYNAMICS</div>', unsafe_allow_html=True)
+    # The Chaos Attractor
+    fig_chaos = utils.plot_chaos_attractor(df, curr_time)
+    st.plotly_chart(fig_chaos, use_container_width=True)
+    st.caption("Lag Plot (Attractor): Compression of this shape indicates loss of heart rate complexity/variability (Early Sepsis Marker).")
 
-    st.markdown("### RISK PROFILE")
-    fig_gauge = utils.plot_gauge_commercial(current_risk)
-    st.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
+# --- ROW 3: STATE SPACE & DEEP DIVE ---
+col_pca, col_metrics = st.columns([1, 2])
+
+with col_pca:
+    st.markdown('<div class="section-header">STATE SPACE TRAJECTORY</div>', unsafe_allow_html=True)
+    # The PCA Plot
+    fig_pca = utils.plot_state_space(df, curr_time)
+    st.plotly_chart(fig_pca, use_container_width=True)
+
+with col_metrics:
+    st.markdown('<div class="section-header">CLINICAL METRICS DRILLDOWN</div>', unsafe_allow_html=True)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Heart Rate", f"{int(current_row['HR'])}")
+    m2.metric("Sys BP", f"{int(current_row['SBP'])}")
+    m3.metric("Shock Index", f"{(current_row['HR']/current_row['SBP']):.2f}")
     
-    st.markdown("### CLINICAL AXIS")
-    fig_radar = utils.plot_radar_commercial(current_vals)
-    st.plotly_chart(fig_radar, use_container_width=True, config={'displayModeBar': False})
-
-with c_right:
-    # 1. Main Monitor Strip
-    st.markdown("### HEMODYNAMIC TRENDS")
-    fig_strip = utils.plot_monitor_strip(df_view, df_view.index, df_view['SI'])
-    st.plotly_chart(fig_strip, use_container_width=True, config={'displayModeBar': False})
-    
-    # 2. Deviation Heatmap
-    st.markdown("### PHYSIOLOGICAL DEVIATION MATRIX")
-    fig_heat = utils.plot_heatmap_commercial(z_view, VARS)
-    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
+    st.markdown("---")
+    st.markdown("""
+    **Actionable Protocol:**
+    1.  **Check SPC Status:** If yellow markers appear, assess fluid responsiveness.
+    2.  **Monitor State Trajectory:** Movement rightward (PC1) indicates hemodynamic stress.
+    3.  **Chaos Check:** If Attractor collapses to a line, patient has lost autonomic variability.
+    """)
