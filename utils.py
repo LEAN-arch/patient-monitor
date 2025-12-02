@@ -2,271 +2,287 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression
 
-# --- 1. Simulation Logic (Unchanged for consistency) ---
-def simulate_patient(mins_total=720):
-    t = np.arange(mins_total)
-    
-    # Base Vitals (Stable) with slight noise
-    hr = np.random.normal(75, 1.5, mins_total)
-    sbp = np.random.normal(120, 2, mins_total)
-    spo2 = np.random.normal(98, 0.5, mins_total)
-    rr = np.random.normal(16, 1, mins_total)
-    pi = np.random.normal(3.5, 0.1, mins_total)
-
-    # SHOCK EVENT starts at min 400
-    shock_start = 400
-    decomp_start = 550
-    
-    # Phase 1: Compensation (400-550)
-    # HR rises steadily
-    hr[shock_start:] += np.linspace(0, 45, mins_total-shock_start) + np.random.normal(0, 2, mins_total-shock_start)
-    # PI drops (Vasoconstriction) - The early sign
-    pi[shock_start:] = np.maximum(0.2, pi[shock_start:] - np.linspace(0, 3.2, mins_total-shock_start))
-    # RR increases (Compensatory tachypnea)
-    rr[shock_start:] += np.linspace(0, 14, mins_total-shock_start)
-
-    # Phase 2: Decompensation (550+)
-    # SBP crashes
-    sbp[decomp_start:] -= np.linspace(0, 45, mins_total-decomp_start) + np.random.normal(0, 2, mins_total-decomp_start)
-    # SpO2 drops
-    spo2[decomp_start:] = np.maximum(82, spo2[decomp_start:] - np.linspace(0, 12, mins_total-decomp_start))
-
-    df = pd.DataFrame({'HR': hr, 'SBP': sbp, 'SpO2': spo2, 'RR': rr, 'PI': pi}, index=t)
-    return df
-
-def fit_var_and_residuals_full(df, baseline_window=120):
-    baseline = df.iloc[:baseline_window]
-    means = baseline.mean()
-    stds = baseline.std()
-    stds[stds == 0] = 1
-    z_scores = (df - means) / stds
-    cov_matrix = z_scores.iloc[:baseline_window].cov()
-    return z_scores, cov_matrix
-
-def compute_mahalanobis_risk(z_scores, cov_matrix):
-    inv_cov = np.linalg.pinv(cov_matrix.values)
-    values = z_scores.values
-    md_sq = [np.dot(np.dot(row, inv_cov), row.T) for row in values]
-    risk = np.sqrt(md_sq)
-    return risk, inv_cov
-
-# --- 2. Commercial-Grade Visualization Functions ---
-
-# COLOR PALETTE (Medical Standard)
+# --- 1. CONFIGURATION ---
 COLORS = {
-    'HR': '#00ff00',      # Green
-    'SBP': '#ff3333',     # Red
-    'SpO2': '#00ccff',    # Cyan
-    'RR': '#ffff00',      # Yellow
-    'PI': '#d142f5',      # Purple
-    'Risk': '#ffffff',    # White
-    'Grid': '#1f2630',    # Dark Grey
-    'Bg': '#0e1117'       # Streamlit Dark
+    'bg': '#0b0e11',
+    'card': '#15191f',
+    'text': '#e0e0e0',
+    'grid': '#2b313b',
+    'hr': '#00f2ea',      # Cyan
+    'sbp': '#ff0055',     # Neon Red
+    'spc_mean': '#00ff00',
+    'spc_band': 'rgba(0, 255, 0, 0.05)',
+    'forecast': '#ffae00' # Amber
 }
 
-def plot_monitor_strip(df, t_axis, shock_index):
+# --- 2. ADVANCED SIMULATION ---
+def simulate_patient_dynamics(mins_total=720):
     """
-    Creates a synchronized multi-channel strip chart resembling a bedside monitor.
-    Features: Dark mode, neon lines, synchronized crosshairs (spikelines).
+    Simulates patient physiology with non-linear dynamics for Chaos theory analysis.
     """
-    fig = make_subplots(
-        rows=4, cols=1, 
-        shared_xaxes=True, 
-        vertical_spacing=0.02,
-        row_heights=[0.25, 0.25, 0.25, 0.25],
-        specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
-    )
-
-    # --- Track 1: Hemodynamics (HR & SBP) ---
-    # HR Area
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=df['HR'], name="HR", mode='lines',
-        line=dict(color=COLORS['HR'], width=2),
-        fill='tozeroy', fillcolor='rgba(0, 255, 0, 0.1)'
-    ), row=1, col=1)
+    t = np.arange(mins_total)
     
-    # SBP Line
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=df['SBP'], name="SBP", mode='lines',
-        line=dict(color=COLORS['SBP'], width=2)
-    ), row=1, col=1, secondary_y=True)
-
-    # --- Track 2: Shock Index (The Derived Metric) ---
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=shock_index, name="Shock Index", mode='lines',
-        line=dict(color='#ffa500', width=2),
-        fill='tozeroy', fillcolor='rgba(255, 165, 0, 0.1)'
-    ), row=2, col=1)
+    # 1. Baseline (Stable Attractor)
+    # Using sine waves + fractal noise to simulate biological variability (HRV)
+    noise = np.random.normal(0, 1, mins_total)
+    hr = 75 + 2 * np.sin(t/50) + noise
+    sbp = 120 + 1 * np.cos(t/60) + noise
+    pi = 3.5 + 0.1 * np.sin(t/30) + 0.1 * noise
     
-    # Critical Threshold Line
-    fig.add_hline(y=0.9, line_dash="dot", line_color="red", row=2, col=1, annotation_text="Risk > 0.9", annotation_position="top left")
+    # 2. Pathological Event (The "Drift")
+    # Starts at 400. Not a sudden jump, but a change in the Attractor.
+    event_start = 400
+    
+    # Drift functions
+    drift_hr = np.linspace(0, 40, mins_total-event_start) ** 1.1 # Non-linear rise
+    drift_pi = np.linspace(0, 2.5, mins_total-event_start)       # Linear constriction
+    drift_sbp = np.zeros(mins_total-event_start)
+    
+    # Late crash for SBP (Decompensation)
+    crash_start = 600
+    if mins_total > crash_start:
+        drift_sbp[crash_start-event_start:] = np.linspace(0, 30, mins_total-crash_start) ** 1.5
 
-    # --- Track 3: Perfusion (PI) ---
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=df['PI'], name="Perfusion", mode='lines',
-        line=dict(color=COLORS['PI'], width=2),
-        fill='tozeroy', fillcolor='rgba(209, 66, 245, 0.1)'
-    ), row=3, col=1)
+    # Apply drifts
+    hr[event_start:] += drift_hr
+    sbp[event_start:] -= drift_sbp
+    pi[event_start:] = np.maximum(0.5, pi[event_start:] - drift_pi)
+    
+    # Add micro-volatility (loss of complexity) as shock advances
+    # Sick patients often have REDUCED variability (stiff system) or CHAOTIC variability
+    hr[event_start:] += np.random.normal(0, 2, mins_total-event_start) # Increased noise
 
-    # --- Track 4: Respiration & Oxygen ---
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=df['SpO2'], name="SpO2", mode='lines',
-        line=dict(color=COLORS['SpO2'], width=2)
-    ), row=4, col=1)
-    fig.add_trace(go.Scatter(
-        x=t_axis, y=df['RR'], name="RR", mode='lines',
-        line=dict(color=COLORS['RR'], width=1, dash='dot')
-    ), row=4, col=1)
+    return pd.DataFrame({'HR': hr, 'SBP': sbp, 'PI': pi}, index=t)
 
-    # --- Commercial Styling ---
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=600,
-        margin=dict(l=0, r=0, t=20, b=20),
-        legend=dict(orientation="h", y=1.02, x=0, bgcolor='rgba(0,0,0,0)'),
-        hovermode="x unified" # Key for synchronization
-    )
-
-    # Grid and Axis Styling (Medical Monitor Look)
-    for i in range(1, 5):
-        fig.update_yaxes(showgrid=True, gridcolor=COLORS['Grid'], zeroline=False, row=i, col=1)
-        # Add Spikelines (The vertical cursor)
-        fig.update_xaxes(
-            showgrid=True, gridcolor=COLORS['Grid'], 
-            showspikes=True, spikemode='across', spikesnap='cursor', 
-            spikedash='solid', spikecolor='grey', spikethickness=1,
-            row=i, col=1
-        )
-
-    # Specific Y-Axis Labels
-    fig.update_yaxes(title_text="HR / SBP", row=1, col=1)
-    fig.update_yaxes(title_text="Shock Idx", row=2, col=1)
-    fig.update_yaxes(title_text="PI %", row=3, col=1)
-    fig.update_yaxes(title_text="SpO2 / RR", row=4, col=1)
-
-    return fig
-
-def plot_heatmap_commercial(z_scores_view, vars_list):
+# --- 3. SPC ANALYTICS (Western Electric Rules) ---
+def detect_spc_violations(series, window=60):
     """
-    High-contrast heatmap with custom colorscale to highlight anomalies.
+    Detects Western Electric Rule violations:
+    1. Points beyond 3 sigma (Control Limits)
+    2. 2 out of 3 points beyond 2 sigma
+    3. 8 consecutive points on one side of mean (Trend)
     """
-    # Custom colorscale: Black/Blue for low/normal, fiery Red/Yellow for high deviation
+    mean = series.rolling(window=window).mean()
+    std = series.rolling(window=window).std()
     
-    # Clip Z-scores for visualization stability
-    z_clipped = z_scores_view.clip(-4, 4)
+    ucl = mean + 3*std
+    lcl = mean - 3*std
     
-    fig = go.Figure(data=go.Heatmap(
-        z=z_clipped.T,
-        x=z_scores_view.index,
-        y=vars_list,
-        colorscale=[
-            [0.0, '#0000ff'],   # Deep Blue (Low)
-            [0.35, '#000033'],  # Dark Blue
-            [0.5, '#000000'],   # Black (Baseline)
-            [0.65, '#330000'],  # Dark Red
-            [1.0, '#ff0000']    # Bright Red (High)
-        ],
-        zmid=0,
-        showscale=False # Remove colorbar to save space, rely on hover
-    ))
+    # Identify violations
+    violation_idx = []
+    violation_type = []
     
-    fig.update_layout(
-        title=dict(text="DEVIATION HEATMAP (Z-Score)", font=dict(size=12, color="gray")),
-        height=200,
-        margin=dict(l=0, r=0, t=30, b=10),
-        template="plotly_dark",
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        hovermode="x unified"
-    )
-    fig.update_xaxes(showgrid=False, showspikes=True, spikemode='across', spikecolor='white')
-    fig.update_yaxes(showgrid=False)
+    values = series.values
+    means = mean.values
     
-    return fig
+    for i in range(window, len(series)):
+        # Rule 1: Breach
+        if values[i] > ucl.iloc[i] or values[i] < lcl.iloc[i]:
+            violation_idx.append(series.index[i])
+            violation_type.append('Breach')
+            continue
+            
+        # Rule 2: Shift (Simplification for speed: 8 points on one side)
+        if i > 8:
+            last_8 = values[i-8:i] - means[i-8:i]
+            if np.all(last_8 > 0) or np.all(last_8 < 0):
+                violation_idx.append(series.index[i])
+                violation_type.append('Shift')
 
-def plot_radar_commercial(current_row):
-    """
-    A 'Target' style radar chart with risk zones.
-    """
-    categories = ['Tachycardia', 'Hypotension', 'Hypoperfusion', 'Desaturation', 'Tachypnea']
-    
-    # Normalize to 0-1 scale where 1 is Max Criticality
-    # Using clinical logic inversions where necessary
-    val_hr = np.clip((current_row['HR'] - 60) / 100, 0, 1)
-    val_sbp = np.clip((140 - current_row['SBP']) / 100, 0, 1) # Inverted
-    val_pi = np.clip((4.0 - current_row['PI']) / 4.0, 0, 1)   # Inverted
-    val_spo2 = np.clip((100 - current_row['SpO2']) / 20, 0, 1) # Inverted
-    val_rr = np.clip((current_row['RR'] - 12) / 30, 0, 1)
+    return mean, ucl, lcl, violation_idx, violation_type
 
-    values = [val_hr, val_sbp, val_pi, val_spo2, val_rr]
-    values += [values[0]]
-    categories += [categories[0]]
+# --- 4. AI PROGNOSTICS (Forecasting) ---
+def generate_ai_forecast(series, future_steps=30):
+    """
+    Uses Auto-Regressive Logic to project trajectory with uncertainty cones.
+    """
+    # Fit linear trend on last 20 mins to capture momentum
+    y = series.values[-20:]
+    x = np.arange(len(y)).reshape(-1, 1)
+    model = LinearRegression()
+    model.fit(x, y)
+    
+    # Predict future
+    x_future = np.arange(len(y), len(y) + future_steps).reshape(-1, 1)
+    trend = model.predict(x_future)
+    
+    # Calculate noise/uncertainty based on recent volatility
+    volatility = np.std(y)
+    
+    # Expanding cone of uncertainty (Monte Carlo approximation)
+    upper = trend + (np.linspace(1, 2, future_steps) * volatility * 1.96)
+    lower = trend - (np.linspace(1, 2, future_steps) * volatility * 1.96)
+    
+    return trend, upper, lower
+
+# --- 5. VISUALIZATION: SPC MONITOR ---
+def plot_spc_monitor(df, curr_time, window=180):
+    start = max(0, curr_time - window)
+    data = df.iloc[start:curr_time]
+    
+    # Calculate SPC
+    mean_hr, ucl_hr, lcl_hr, vio_idx, vio_type = detect_spc_violations(df['HR'].iloc[:curr_time])
+    
+    # AI Forecast
+    forecast_hr, f_upper, f_lower = generate_ai_forecast(df['HR'].iloc[:curr_time])
+    t_future = np.arange(curr_time, curr_time + 30)
 
     fig = go.Figure()
 
-    # 1. Background Risk Zones
-    fig.add_trace(go.Scatterpolar(
-        r=[0.5]*6, theta=categories, fill='toself', 
-        fillcolor='rgba(0, 255, 0, 0.1)', line=dict(color='green', width=1, dash='dot'),
-        hoverinfo='skip', name='Safe Zone'
-    ))
-    fig.add_trace(go.Scatterpolar(
-        r=[0.8]*6, theta=categories, fill='toself', 
-        fillcolor='rgba(255, 165, 0, 0.1)', line=dict(color='orange', width=1, dash='dot'),
-        hoverinfo='skip', name='Warning Zone'
-    ))
+    # 1. Historical Data
+    fig.add_trace(go.Scatter(x=data.index, y=data['HR'], mode='lines', 
+                             name='HR Actual', line=dict(color=COLORS['hr'], width=2)))
+    
+    # 2. SPC Bands (Dynamic)
+    fig.add_trace(go.Scatter(x=data.index, y=ucl_hr.loc[data.index], mode='lines', 
+                             line=dict(width=0), showlegend=False, hoverinfo='skip'))
+    fig.add_trace(go.Scatter(x=data.index, y=lcl_hr.loc[data.index], mode='lines', 
+                             line=dict(width=0), fill='tonexty', fillcolor=COLORS['spc_band'], 
+                             name='3σ Control Zone'))
+    
+    fig.add_trace(go.Scatter(x=data.index, y=mean_hr.loc[data.index], mode='lines',
+                             line=dict(color=COLORS['spc_mean'], dash='dot', width=1), name='Moving Mean'))
 
-    # 2. Actual Patient Data
-    fig.add_trace(go.Scatterpolar(
-        r=values,
-        theta=categories,
-        fill='toself',
-        fillcolor='rgba(255, 0, 0, 0.4)',
-        line=dict(color='red', width=3),
-        name='Current Status'
-    ))
+    # 3. Violation Markers
+    relevant_violations = [v for v in vio_idx if v >= start and v < curr_time]
+    if relevant_violations:
+        fig.add_trace(go.Scatter(
+            x=relevant_violations, 
+            y=df.loc[relevant_violations, 'HR'],
+            mode='markers',
+            marker=dict(color='yellow', size=8, symbol='x'),
+            name='SPC Violation'
+        ))
+
+    # 4. AI Forecast (The Cone)
+    fig.add_trace(go.Scatter(x=t_future, y=f_upper, mode='lines', line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=t_future, y=f_lower, mode='lines', line=dict(width=0), 
+                             fill='tonexty', fillcolor='rgba(255, 174, 0, 0.2)', name='AI 95% CI'))
+    fig.add_trace(go.Scatter(x=t_future, y=forecast_hr, mode='lines', 
+                             line=dict(color=COLORS['forecast'], dash='dash'), name='Prognosis'))
 
     fig.update_layout(
-        polar=dict(
-            bgcolor='rgba(0,0,0,0)',
-            radialaxis=dict(visible=False, range=[0, 1]),
-            angularaxis=dict(tickfont=dict(size=10, color='white'))
-        ),
-        showlegend=False,
+        template="plotly_dark",
+        plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=30, r=30, t=20, b=20),
-        height=300
+        height=350,
+        margin=dict(l=0, r=0, t=30, b=0),
+        title=dict(text="HR: STATISTICAL PROCESS CONTROL & AI FORECAST", font=dict(size=14)),
+        xaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
+        yaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
+        legend=dict(orientation="h", y=1, x=0, bgcolor='rgba(0,0,0,0)')
     )
     return fig
 
-def plot_gauge_commercial(score):
+# --- 6. VISUALIZATION: STATE SPACE (PCA + CHAOS) ---
+def plot_state_space(df, curr_time):
     """
-    Minimalist semi-circle gauge.
-    """
-    color = "#00ff00"
-    if score > 15: color = "#ffa500"
-    if score > 25: color = "#ff0000"
+    Plots the 'Phase Space' of the patient.
+    X-axis: Principal Component 1 (Hemodynamics)
+    Y-axis: Principal Component 2 (Perfusion/Stress)
     
-    fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = score,
-        number = {'font': {'size': 40, 'color': color}},
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        gauge = {
-            'axis': {'range': [None, 50], 'visible': False},
-            'bar': {'color': color, 'thickness': 1},
-            'bgcolor': "#333",
-            'steps': [
-                {'range': [0, 50], 'color': "#1e2630"} # Background track
-            ],
-        }
+    Stable patients hover in the center. Unstable patients 'orbit' out or drift linearly.
+    """
+    # Fit PCA on baseline (first 120 mins)
+    scaler = StandardScaler()
+    pca = PCA(n_components=2)
+    
+    baseline = df.iloc[:120][['HR', 'SBP', 'PI']]
+    scaler.fit(baseline)
+    pca.fit(scaler.transform(baseline))
+    
+    # Transform current history
+    history = df.iloc[max(0, curr_time-300):curr_time][['HR', 'SBP', 'PI']]
+    coords = pca.transform(scaler.transform(history))
+    
+    # Create the "Comet" effect (Recent points are opaque, old are transparent)
+    n_points = len(coords)
+    alphas = np.linspace(0.1, 1, n_points)
+    
+    fig = go.Figure()
+    
+    # The Trajectory
+    fig.add_trace(go.Scatter(
+        x=coords[:, 0], y=coords[:, 1],
+        mode='markers+lines',
+        marker=dict(
+            color=np.arange(n_points), 
+            colorscale='Viridis', 
+            size=6,
+            opacity=alphas
+        ),
+        line=dict(width=1, color='rgba(255,255,255,0.3)'),
+        name='State Trajectory'
     ))
+    
+    # The "Safe Zone" (Circle at 0,0)
+    fig.add_shape(type="circle",
+        xref="x", yref="y",
+        x0=-2, y0=-2, x1=2, y1=2,
+        line_color="green", fillcolor="rgba(0,255,0,0.1)",
+    )
+    
+    # Current Head
+    fig.add_trace(go.Scatter(
+        x=[coords[-1, 0]], y=[coords[-1, 1]],
+        mode='markers',
+        marker=dict(color='red', size=12, symbol='diamond'),
+        name='Current State'
+    ))
+
     fig.update_layout(
-        height=200, 
-        margin=dict(l=10, r=10, t=10, b=10),
-        paper_bgcolor='rgba(0,0,0,0)'
+        template="plotly_dark",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        height=350,
+        margin=dict(l=0, r=0, t=30, b=0),
+        title=dict(text="PHYSIOLOGICAL STATE SPACE (PCA)", font=dict(size=14)),
+        xaxis=dict(title="PC1 (Hemodynamics)", showgrid=True, gridcolor=COLORS['grid'], zeroline=True),
+        yaxis=dict(title="PC2 (Perfusion)", showgrid=True, gridcolor=COLORS['grid'], zeroline=True),
+        showlegend=False
+    )
+    return fig
+
+# --- 7. VISUALIZATION: CHAOS ATTRACTOR (Poincaré Plot) ---
+def plot_chaos_attractor(df, curr_time, lag=1):
+    """
+    Plots HR(t) vs HR(t-lag).
+    Round ball = Healthy Chaos (Sinus Arrhythmia).
+    Stretched line = Reduced Complexity / Deterministic drift (Pathology).
+    """
+    start = max(0, curr_time - 120)
+    data = df['HR'].iloc[start:curr_time].values
+    
+    x_t = data[:-lag]
+    x_t_plus_1 = data[lag:]
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=x_t, y=x_t_plus_1,
+        mode='markers',
+        marker=dict(
+            color='#00ccff',
+            size=5,
+            opacity=0.6,
+            line=dict(width=0.5, color='white')
+        ),
+        name='Attractor'
+    ))
+    
+    fig.update_layout(
+        template="plotly_dark",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        height=300,
+        width=300,
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(text="CHAOS ATTRACTOR (Lag Plot)", font=dict(size=12)),
+        xaxis=dict(title="HR(t)", showgrid=True, gridcolor=COLORS['grid']),
+        yaxis=dict(title=f"HR(t+{lag})", showgrid=True, gridcolor=COLORS['grid']),
     )
     return fig
