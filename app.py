@@ -3,139 +3,186 @@ import pandas as pd
 import numpy as np
 import utils
 
-# --- 1. PAGE CONFIGURATION ---
-st.set_page_config(
-    page_title="Vitals | Precision Monitor",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# --- 1. UX: PAGE CONFIG & STYLING ---
+st.set_page_config(page_title="Hemodynamic AI", layout="wide")
 
-# --- 2. COMMERCIAL CSS (The "Linear/Stripe" Look) ---
 st.markdown("""
 <style>
-    /* 1. Reset & Background */
-    .stApp { background-color: #f3f4f6; }
-    .block-container { padding-top: 1rem; padding-bottom: 2rem; }
-
-    /* 2. The 'Card' Component */
-    .viz-card {
-        background-color: white;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        padding: 24px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        margin-bottom: 16px;
+    /* CSS Variables for Consistency */
+    :root {
+        --primary: #2563eb;
+        --danger: #dc2626;
+        --bg-card: #ffffff;
+        --text-meta: #6b7280;
     }
-
-    /* 3. Typography */
-    h1, h2, h3 { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; letter-spacing: -0.5px; color: #111827; }
-    .card-header { font-size: 14px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 10px; }
     
-    /* 4. KPI Box Styling */
-    .kpi-container { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid #f3f4f6; padding-bottom: 8px; margin-bottom: 8px; }
-    .kpi-label { font-size: 13px; font-weight: 500; color: #6b7280; }
-    .kpi-value { font-size: 28px; font-weight: 700; color: #111827; font-feature-settings: "tnum"; }
-    .kpi-unit { font-size: 14px; color: #9ca3af; margin-left: 4px; }
+    /* Clean Card Layout */
+    .metric-container {
+        background: var(--bg-card);
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .metric-label {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-meta);
+        margin-bottom: 4px;
+    }
+    .metric-value {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #111827;
+        font-feature-settings: "tnum";
+    }
+    .metric-sub {
+        font-size: 0.75rem;
+        margin-top: 4px;
+        font-weight: 500;
+    }
     
-    /* 5. Alert Badges */
-    .badge { padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 700; display: inline-block; }
-    .badge-ok { background: #d1fae5; color: #065f46; border: 1px solid #a7f3d0; }
-    .badge-warn { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-    .badge-crit { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-
+    /* Status Indicators */
+    .trend-up { color: #dc2626; }   /* Bad trend up (HR) */
+    .trend-down { color: #dc2626; } /* Bad trend down (BP) */
+    .trend-ok { color: #059669; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. DATA LOADING ---
+# --- 2. DATA LAYER ---
 @st.cache_data
-def get_sim_data():
-    return utils.simulate_clinical_course()
+def get_data(): return utils.simulate_hemodynamic_shock()
+df = get_data()
 
-df = get_sim_data()
-
-# --- 4. CONTROLS (Top Bar) ---
+# --- 3. CONTROLS ---
 with st.sidebar:
     st.header("Simulation Control")
-    curr_time = st.slider("Timeline (minutes)", 120, 720, 720)
-    st.caption("Try T=350 (Early Warning) vs T=600 (Crash)")
+    curr_time = st.slider("Time Elapsed (min)", 120, 720, 720)
+    
+    st.markdown("---")
+    st.markdown("#### 📖 Scenario Context")
+    st.info("""
+    **Occult Hemorrhage Model**
+    
+    1. **T=0-250 (Stable):** Normal Physiology.
+    2. **T=250-550 (Compensated Shock):** 
+       - Volume drops. 
+       - **PI drops** (Vasoconstriction).
+       - **HR rises** to maintain MAP.
+       - **Pulse Pressure narrows**.
+    3. **T=550+ (Decompensation):**
+       - Reserve exhausted. MAP crashes.
+    """)
 
-# --- 5. LOGIC ENGINE ---
+# --- 4. LOGIC ENGINE ---
 current = df.iloc[curr_time-1]
-spc_stats = utils.run_western_electric_spc(df['HR'].iloc[:curr_time])
-coords, loadings = utils.run_pca_compass(df, curr_time)
+prev = df.iloc[curr_time-10] # 10 min lookback for delta
 
-# Heuristic Risk Assessment
-risk_level = "STABLE"
-if current['PI'] < 2.0 or (current['HR'] > spc_stats['u2'].iloc[-1]):
-    risk_level = "WARNING"
-if current['SI'] > 0.9 or current['SBP'] < 90:
-    risk_level = "CRITICAL"
+# Clinical Logic
+shock_index = current['HR'] / current['SBP']
+pulse_pressure = current['SBP'] - current['DBP']
 
-# --- 6. UI LAYOUT ---
+risk_status = "STABLE"
+risk_color = "green"
+if current['PI'] < 1.0 or shock_index > 0.8:
+    risk_status = "COMPENSATING"
+    risk_color = "orange"
+if current['MAP'] < 65:
+    risk_status = "CRITICAL SHOCK"
+    risk_color = "red"
 
-# A. Header (HUD)
-c_hud1, c_hud2 = st.columns([3, 1])
-with c_hud1:
-    st.markdown(f"### 🏥 ICU Monitor | Bed 04 | {risk_level} PROTOCOL")
-with c_hud2:
-    if risk_level == "STABLE":
-        st.markdown('<div style="text-align:right"><span class="badge badge-ok">SYSTEM STABLE</span></div>', unsafe_allow_html=True)
-    elif risk_level == "WARNING":
-        st.markdown('<div style="text-align:right"><span class="badge badge-warn">⚠️ EARLY DRIFT DETECTED</span></div>', unsafe_allow_html=True)
+# --- 5. UI LAYOUT ---
+
+# Header
+c1, c2 = st.columns([3, 1])
+with c1:
+    st.title("Hemodynamic Command Center")
+    st.markdown(f"**Patient Status:** :{risk_color}[{risk_status}] | **Protocol:** SEPSIS-3")
+with c2:
+    # Top-level Risk Score (0-100)
+    # Simple heuristic: normalized average of bad metrics
+    risk_score = min(100, int((shock_index * 50) + (10/current['PI'] * 2)))
+    st.metric("Aggregate Risk Score", f"{risk_score}/100", 
+              delta="High" if risk_score > 50 else "Normal", delta_color="inverse")
+
+st.markdown("---")
+
+# METRIC CARDS (The "Dashboard" View)
+col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
+
+def html_metric(col, label, value, sub_val, sub_color="gray"):
+    col.markdown(f"""
+    <div class="metric-container">
+        <div class="metric-label">{label}</div>
+        <div class="metric-value">{value}</div>
+        <div class="metric-sub" style="color:{sub_color}">{sub_val}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 1. MAP (The Organ Perfusion Goal)
+delta_map = current['MAP'] - prev['MAP']
+html_metric(col_m1, "MAP (Mean Art. Press)", f"{int(current['MAP'])}", 
+            f"{delta_map:+.1f} mmHg (10m)", 
+            "red" if current['MAP'] < 65 else "green")
+
+# 2. Heart Rate (The Compensation Engine)
+delta_hr = current['HR'] - prev['HR']
+html_metric(col_m2, "Heart Rate", f"{int(current['HR'])}", 
+            f"{delta_hr:+.1f} bpm (Trend)", 
+            "red" if current['HR'] > 100 else "gray")
+
+# 3. Pulse Pressure (The Stroke Volume Proxy)
+# *Crucial Value Add*
+html_metric(col_m3, "Pulse Pressure", f"{int(pulse_pressure)}", 
+            "Narrowing < 30" if pulse_pressure < 30 else "Normal",
+            "red" if pulse_pressure < 30 else "green")
+
+# 4. Shock Index (The Occult Indicator)
+html_metric(col_m4, "Shock Index (HR/SBP)", f"{shock_index:.2f}", 
+            "Limit > 0.9", 
+            "red" if shock_index > 0.9 else "gray")
+
+# 5. PI (The Early Warning)
+html_metric(col_m5, "Perfusion Index (PI)", f"{current['PI']:.2f}%", 
+            "Vasoconstriction < 1.0", 
+            "red" if current['PI'] < 1.0 else "green")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# MAIN VISUALIZATION ROW
+c_main, c_side = st.columns([2.5, 1])
+
+with c_main:
+    st.subheader("Hemodynamic Profile")
+    st.caption("Visualizing the 'Crossover' (HR rising / BP stable) and Pulse Pressure narrowing.")
+    fig_profile = utils.plot_hemodynamic_profile(df, curr_time)
+    st.plotly_chart(fig_profile, use_container_width=True)
+
+with c_side:
+    st.subheader("Early Warning System")
+    
+    # 1. PI Trend (SPC)
+    fig_pi = utils.plot_causal_spc(df, curr_time)
+    st.plotly_chart(fig_pi, use_container_width=True)
+    
+    # 2. Radar Diagnosis
+    st.markdown("**Stability Fingerprint**")
+    fig_radar = utils.plot_perfusion_radar(current)
+    st.plotly_chart(fig_radar, use_container_width=True)
+    
+    # 3. AI Insight Box
+    if risk_status == "COMPENSATING":
+        st.warning("""
+        **AI Analysis:** High Probability of Compensated Shock.
+        - HR is rising to defend MAP.
+        - Pulse Pressure is narrowing (Low Stroke Volume).
+        - **Action:** Assess Fluid Responsiveness.
+        """)
+    elif risk_status == "CRITICAL SHOCK":
+        st.error("**AI Analysis:** Hemodynamic Decompensation. Vasopressors required.")
     else:
-        st.markdown('<div style="text-align:right"><span class="badge badge-crit">🚨 HEMODYNAMIC CRASH</span></div>', unsafe_allow_html=True)
-
-# B. Main Grid
-col_left, col_right = st.columns([2.8, 1.2])
-
-# LEFT COLUMN: The "Command Center"
-with col_left:
-    st.markdown('<div class="viz-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">Real-time Hemodynamics & Forecast</div>', unsafe_allow_html=True)
-    
-    # 1. The Master Plot
-    fig_master = utils.plot_command_center(df, curr_time)
-    st.plotly_chart(fig_master, use_container_width=True, config={'displayModeBar': False})
-    
-    # 2. The Fingerprint (Heatmap)
-    st.markdown('<div style="margin-top: 20px;"></div>', unsafe_allow_html=True) # Spacer
-    fig_heat = utils.plot_causal_strip(df, curr_time)
-    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
-    
-    st.caption("Graph 1 Analysis: Shaded orange regions indicate statistical deviation (SPC). Purple area is AI Confidence Interval.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# RIGHT COLUMN: Metrics & State Vector
-with col_right:
-    # 1. KPI Cards (HTML/CSS for perfect layout)
-    st.markdown('<div class="viz-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">Key Vitals</div>', unsafe_allow_html=True)
-    
-    def kpi(label, val, unit, color="#111827"):
-        st.markdown(f"""
-        <div class="kpi-container">
-            <span class="kpi-label">{label}</span>
-            <span>
-                <span class="kpi-value" style="color:{color}">{val}</span>
-                <span class="kpi-unit">{unit}</span>
-            </span>
-        </div>
-        """, unsafe_allow_html=True)
-
-    kpi("Heart Rate", int(current['HR']), "bpm", "#2563eb")
-    kpi("Blood Pressure", f"{int(current['SBP'])}/80", "mmHg", "#db2777")
-    kpi("Shock Index", f"{current['SI']:.2f}", "idx", "#d97706" if current['SI']>0.8 else "#111827")
-    kpi("Perfusion (PI)", f"{current['PI']:.2f}", "%", "#059669")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # 2. The Compass (PCA)
-    st.markdown('<div class="viz-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">Stability Compass (PCA)</div>', unsafe_allow_html=True)
-    
-    fig_pca = utils.plot_pca_compass(coords, loadings)
-    st.plotly_chart(fig_pca, use_container_width=True, config={'displayModeBar': False})
-    
-    # Dynamic Explanation
-    driver = loadings['x'].idxmax() if abs(coords[-1,0]) > abs(coords[-1,1]) else loadings['y'].idxmax()
-    st.info(f"**Interpretation:** Patient is drifting from center. Primary vector: **{driver}**.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.success("**AI Analysis:** Hemodynamics Stable. No micro-circulatory failure detected.")
