@@ -4,156 +4,145 @@ import numpy as np
 import utils
 
 # --- CONFIG ---
-st.set_page_config(page_title="AETHER | Digital Twin", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="OMNI | Command Center", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS: GLASSMORPHISM ---
+# --- DARK MATTER CSS ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f1f5f9; }
+    .stApp { background-color: #050505; color: #e2e8f0; }
     
-    /* Hero Card */
-    .hero-card {
-        background: white; border: 1px solid #e2e8f0; border-radius: 12px;
-        padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        margin-bottom: 20px;
+    /* Neon Card */
+    .neon-card {
+        background: rgba(20, 25, 35, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        padding: 10px;
+        backdrop-filter: blur(10px);
+        margin-bottom: 10px;
     }
     
-    /* KPI Mini Card */
-    .kpi-mini {
-        background: white; border: 1px solid #e2e8f0; border-radius: 8px;
-        padding: 10px; text-align: center; height: 100%;
-    }
-    .kpi-val { font-size: 1.6rem; font-weight: 800; color: #0f172a; }
-    .kpi-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+    /* Sparkline KPI */
+    .spark-val { font-size: 1.8rem; font-weight: 800; font-family: monospace; text-shadow: 0 0 10px rgba(0,0,0,0.5); }
+    .spark-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; letter-spacing: 1px; }
     
-    /* Rec Box */
-    .rec-box {
-        background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
-        padding: 15px; border-radius: 8px; font-weight: 600;
-        display: flex; align-items: center; gap: 10px;
+    /* Alert Header */
+    .alert-banner {
+        padding: 15px; border-radius: 6px; border: 1px solid; margin-bottom: 20px;
+        display: flex; justify-content: space-between; align-items: center;
+        background: rgba(255, 0, 85, 0.1); border-color: #ff0055; color: #ff0055;
     }
-    .rec-crit { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
+    .safe-banner { background: rgba(0, 255, 159, 0.1); border-color: #00ff9f; color: #00ff9f; }
     
 </style>
 """, unsafe_allow_html=True)
 
-# --- ENGINE ---
+# --- LOAD DATA ---
 @st.cache_data
-def run_simulation(): return utils.simulate_predictive_scenario()
-df, predictions = run_simulation()
+def load(): return utils.simulate_omni_scenario()
+df, preds = load()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("Aether Control")
-    curr_time = st.slider("Session Time", 200, 720, 720)
-    
-    st.markdown("### 🧪 Predictive Sandbox")
-    st.caption("Simulate intervention effect:")
-    sim_mode = st.radio("Select Simulation:", ["None", "Fluid Bolus (+500mL)", "Norepinephrine (+0.1mcg)"], index=0)
-    
-    st.markdown("---")
-    st.info("**Digital Twin Engine:** Uses 0-D Cardiovascular Physics (Windkessel) + Baroreflex Feedback Loop.")
+    st.header("Omni Control")
+    curr_time = st.slider("Time", 200, 720, 720)
+    st.info("Simulation: Sepsis w/ Predictive Digital Twin")
 
-# --- ANALYTICS ---
+# --- CALC ---
 cur = df.iloc[curr_time-1]
 prv = df.iloc[curr_time-15]
 
 # --- 1. INTELLIGENT HEADER ---
-c1, c2 = st.columns([2, 1])
+# AI Logic
+if cur['MAP'] < 65:
+    status = "CRITICAL: CIRCULATORY FAILURE"
+    rec = "RECOMMENDATION: START VASOPRESSORS (Septic Shock Profile)"
+    style = "alert-banner"
+elif cur['Lactate'] > 2.0:
+    status = "WARNING: OCCULT HYPOPERFUSION"
+    rec = "RECOMMENDATION: OPTIMIZE FLOW (Fluid/Inotrope)"
+    style = "alert-banner"
+else:
+    status = "STABLE: HEMODYNAMICS OPTIMIZED"
+    rec = "CONTINUE MONITORING"
+    style = "safe-banner"
 
-with c1:
-    st.markdown("### 🧬 AETHER | Hemodynamic Digital Twin")
-    
-    # Recommendation Engine
-    rec_text = "Patient Stable."
-    rec_style = ""
-    if cur['MAP'] < 65:
-        if cur['SVR'] < 800:
-            rec_text = "⚠️ RECOMMENDATION: Vasopressors indicated (Vasoplegia)."
-            rec_style = "rec-crit"
-        else:
-            rec_text = "⚠️ RECOMMENDATION: Fluid Resuscitation indicated (Hypovolemia)."
-            rec_style = "rec-crit"
-    elif cur['Lactate'] > 2.0:
-        rec_text = "⚠️ WARNING: Occult Hypoperfusion. Evaluate Cardiac Index."
-        rec_style = "rec-crit"
-        
-    st.markdown(f'<div class="rec-box {rec_style}">🤖 AI INSIGHT: {rec_text}</div>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="{style}">
+    <div style="font-size:1.2rem; font-weight:bold;">{status}</div>
+    <div style="font-weight:600;">{rec}</div>
+</div>
+""", unsafe_allow_html=True)
 
-with c2:
-    # Top Level Risk Score
-    risk = int(np.mean([
-        (100 - cur['MAP']) if cur['MAP'] < 65 else 0,
-        (cur['Lactate'] * 10),
-        (cur['HR'] - 100) if cur['HR'] > 100 else 0
-    ]))
-    risk = np.clip(risk, 0, 100)
-    st.metric("Total Decompensation Risk", f"{int(risk)}%", f"{int(risk - 10)}% vs 15m ago", delta_color="inverse")
-
-# --- 2. KPI MATRIX (Sparklines implied by context) ---
+# --- 2. ROW 1: SPARKLINE KPI STRIP (The Vital 6) ---
 cols = st.columns(6)
-def kpi(col, lbl, val, unit, color):
-    col.markdown(f"""
-    <div class="kpi-mini" style="border-top: 4px solid {color}">
-        <div class="kpi-lbl">{lbl}</div>
-        <div class="kpi-val" style="color:{color}">{val}</div>
-        <div style="font-size:0.8rem; color:#94a3b8">{unit}</div>
-    </div>
-    """, unsafe_allow_html=True)
 
-kpi(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#d946ef")
-kpi(cols[1], "Cardiac Index", f"{cur['CI']:.1f}", "L/min", "#10b981")
-kpi(cols[2], "SVR Index", f"{cur['SVRI']:.0f}", "dyn", "#f59e0b")
-kpi(cols[3], "Stroke Vol", f"{cur['SV']:.0f}", "mL", "#0ea5e9")
-kpi(cols[4], "DO2 Index", f"{cur['DO2']:.0f}", "mL/m2", "#6366f1")
-kpi(cols[5], "Lactate", f"{cur['Lactate']:.1f}", "mmol", "#ef4444")
+def spark_card(col, label, val, unit, color, df_col, low, high):
+    with col:
+        st.markdown(f"""
+        <div class="neon-card" style="border-top: 3px solid {color}">
+            <div class="spark-lbl">{label}</div>
+            <div class="spark-val" style="color:{color}">{val}</div>
+            <div style="font-size:0.7rem; color:#64748b">{unit}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.plotly_chart(utils.plot_spark_spc(df, df_col, color, low, high), use_container_width=True, config={'displayModeBar': False})
 
-st.markdown("<br>", unsafe_allow_html=True)
+spark_card(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#ff0055", "MAP", 65, 100)
+spark_card(cols[1], "CARD. INDEX", f"{cur['CI']:.1f}", "L/min", "#00ff9f", "CI", 2.5, 4.0)
+spark_card(cols[2], "SVR", f"{cur['SVR']:.0f}", "dyn", "#ffaa00", "SVR", 800, 1200)
+spark_card(cols[3], "STROKE VOL", f"{cur['SV']:.0f}", "mL", "#00f2ea", "SV", 60, 100)
+spark_card(cols[4], "LACTATE", f"{cur['Lactate']:.1f}", "mmol", "#b026ff", "Lactate", 0, 2.0)
+spark_card(cols[5], "ENTROPY", f"{cur['Entropy']:.2f}", "σ", "#ffffff", "Entropy", 0.5, 2.0)
 
-# --- 3. PREDICTIVE CANVAS ---
-t1, t2 = st.tabs(["🔮 PREDICTIVE HEMODYNAMICS", "🫀 ORGAN MECHANICS"])
+# --- 3. ROW 2: THE PREDICTIVE CORE (Bullseye & Multiverse) ---
+c_left, c_right = st.columns([1, 1])
 
-with t1:
-    c_left, c_right = st.columns([1, 1])
-    
-    with c_left:
-        # The Money Plot: Bullseye with Prediction Vectors
-        st.markdown("**1. PREDICTIVE COMPASS**")
-        st.caption("Arrows indicate predicted response to Fluids (Blue) vs Pressors (Purple).")
-        fig_bull = utils.plot_predictive_bullseye(df, predictions, curr_time)
-        st.plotly_chart(fig_bull, use_container_width=True)
-    
-    with c_right:
-        # The Time Machine: Multiverse
-        st.markdown("**2. INTERVENTION SIMULATOR**")
-        st.caption("Projected MAP trajectory for different therapeutic strategies.")
-        fig_hor = utils.plot_horizon_multiverse(df, predictions, curr_time)
-        st.plotly_chart(fig_hor, use_container_width=True)
-        
-        if sim_mode == "Fluid Bolus (+500mL)":
-            st.success(f"SIMULATION: Fluid Bolus projected to increase MAP by {int(predictions['fluid'][-1] - predictions['natural'][-1])} mmHg.")
-        elif sim_mode == "Norepinephrine (+0.1mcg)":
-            st.warning(f"SIMULATION: Pressor projected to increase MAP by {int(predictions['pressor'][-1] - predictions['natural'][-1])} mmHg.")
+with c_left:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**1. PREDICTIVE COMPASS (Guidance)**")
+    st.plotly_chart(utils.plot_predictive_compass(df, preds, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-with t2:
-    c3, c4 = st.columns(2)
-    with c3:
-        st.markdown("**3. ORGAN RISK TOPOLOGY**")
-        st.caption("Geometric view of competing organ risks.")
-        fig_rad = utils.plot_organ_radar(df, curr_time)
-        st.plotly_chart(fig_rad, use_container_width=True)
-    with c4:
-        st.markdown("**4. FRANK-STARLING MECHANICS**")
-        st.caption("Preload vs Stroke Volume relationship.")
-        fig_star = utils.plot_starling_dynamic(df, curr_time)
-        st.plotly_chart(fig_star, use_container_width=True)
+with c_right:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**2. INTERVENTION MULTIVERSE (Horizon)**")
+    st.plotly_chart(utils.plot_multiverse(df, preds, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 4. EXPLANATION ---
-with st.expander("ℹ️ HOW THE DIGITAL TWIN WORKS"):
-    st.markdown("""
-    **1. Physics Engine:** This app runs a 0-D cardiovascular model (Windkessel approximation) in the background. It solves for Flow, Pressure, and Resistance based on simulated contractility and compliance.
-    
-    **2. Predictive Vectors:** The 'Compass' chart simulates 30 minutes into the future for 3 scenarios (Do nothing, Give Fluids, Give Pressors). The arrows show you *exactly* where the patient will land.
-    
-    **3. Organ Radar:** Normalizes risks across Renal (Low MAP), Cardiac (High Rate), and Metabolic (High Lactate) axes to visualize 'Therapeutic Conflict'.
-    """)
+# --- 4. ROW 3: DEEP PHYSIOLOGY (Physics & Mechanics) ---
+c3, c4, c5 = st.columns(3)
+
+with c3:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**3. STARLING VECTOR**")
+    st.plotly_chart(utils.plot_starling_vector(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c4:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**4. OXYGEN DEBT LEDGER**")
+    st.plotly_chart(utils.plot_oxygen_debt(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c5:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**5. RENAL AUTOREGULATION**")
+    st.plotly_chart(utils.plot_renal_cliff(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# --- 5. ROW 4: ADVANCED MATH (The "Black Box" Output) ---
+c6, c7 = st.columns(2)
+
+with c6:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**6. GLOBAL STATE SPACE (PCA)**")
+    st.caption("Visualizing Total System Stability.")
+    st.plotly_chart(utils.plot_pca_space(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c7:
+    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
+    st.markdown("**7. NEURO-AUTONOMIC SPECTRUM**")
+    st.caption("Heart Rate Variability Power Spectral Density.")
+    st.plotly_chart(utils.plot_spectrum(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
