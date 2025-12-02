@@ -4,129 +4,156 @@ import numpy as np
 import utils
 
 # --- CONFIG ---
-st.set_page_config(page_title="APEX | Hemodynamic AI", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="AETHER | Digital Twin", layout="wide", initial_sidebar_state="expanded")
 
-# --- CSS: PRO MEDICAL UI ---
+# --- CSS: GLASSMORPHISM ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f8fafc; color: #0f172a; }
+    .stApp { background-color: #f1f5f9; }
     
-    /* KPI Card */
-    .kpi-card {
-        background: white; border: 1px solid #e2e8f0; border-radius: 8px;
-        padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        display: flex; flex-direction: column; justify-content: space-between;
-        height: 100px;
+    /* Hero Card */
+    .hero-card {
+        background: white; border: 1px solid #e2e8f0; border-radius: 12px;
+        padding: 20px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
     }
-    .kpi-title { font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-    .kpi-val { font-size: 1.8rem; font-weight: 800; color: #0f172a; line-height: 1.1; }
-    .kpi-unit { font-size: 0.8rem; color: #94a3b8; font-weight: 500; }
     
-    /* Alerts */
-    .alert-box { padding: 15px; border-radius: 6px; margin-bottom: 20px; font-weight: 600; display: flex; justify-content: space-between; }
-    .alert-crit { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
-    .alert-warn { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-    .alert-safe { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
+    /* KPI Mini Card */
+    .kpi-mini {
+        background: white; border: 1px solid #e2e8f0; border-radius: 8px;
+        padding: 10px; text-align: center; height: 100%;
+    }
+    .kpi-val { font-size: 1.6rem; font-weight: 800; color: #0f172a; }
+    .kpi-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+    
+    /* Rec Box */
+    .rec-box {
+        background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+        padding: 15px; border-radius: 8px; font-weight: 600;
+        display: flex; align-items: center; gap: 10px;
+    }
+    .rec-crit { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; }
     
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOAD ENGINE ---
+# --- ENGINE ---
 @st.cache_data
-def load(): return utils.simulate_coupled_physiology()
-df = load()
+def run_simulation(): return utils.simulate_predictive_scenario()
+df, predictions = run_simulation()
 
-# --- CONTROLS ---
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("Timeline Sync")
-    curr_time = st.slider("Session Minute", 100, 720, 720)
-    st.markdown("### 🧬 Physiology Engine")
-    st.info("Simulation: Coupled Baroreflex Feedback Loop responding to Progressive Septic Vasoplegia.")
+    st.header("Aether Control")
+    curr_time = st.slider("Session Time", 200, 720, 720)
+    
+    st.markdown("### 🧪 Predictive Sandbox")
+    st.caption("Simulate intervention effect:")
+    sim_mode = st.radio("Select Simulation:", ["None", "Fluid Bolus (+500mL)", "Norepinephrine (+0.1mcg)"], index=0)
+    
+    st.markdown("---")
+    st.info("**Digital Twin Engine:** Uses 0-D Cardiovascular Physics (Windkessel) + Baroreflex Feedback Loop.")
 
 # --- ANALYTICS ---
 cur = df.iloc[curr_time-1]
 prv = df.iloc[curr_time-15]
 
-# --- 1. INTELLIGENT TRIAGE HEADER ---
-# Logic: MAP < 65 is Critical. MAP > 65 but High Lactate is Occult Shock.
-status = "STABLE"
-action = "Routine Monitoring"
-style = "alert-safe"
+# --- 1. INTELLIGENT HEADER ---
+c1, c2 = st.columns([2, 1])
 
-if cur['Lactate'] > 2.0:
-    status = "OCCULT SHOCK (Metabolic Mismatch)"
-    action = "Evaluate DO2 (Fluids/Blood)"
-    style = "alert-warn"
+with c1:
+    st.markdown("### 🧬 AETHER | Hemodynamic Digital Twin")
+    
+    # Recommendation Engine
+    rec_text = "Patient Stable."
+    rec_style = ""
+    if cur['MAP'] < 65:
+        if cur['SVR'] < 800:
+            rec_text = "⚠️ RECOMMENDATION: Vasopressors indicated (Vasoplegia)."
+            rec_style = "rec-crit"
+        else:
+            rec_text = "⚠️ RECOMMENDATION: Fluid Resuscitation indicated (Hypovolemia)."
+            rec_style = "rec-crit"
+    elif cur['Lactate'] > 2.0:
+        rec_text = "⚠️ WARNING: Occult Hypoperfusion. Evaluate Cardiac Index."
+        rec_style = "rec-crit"
+        
+    st.markdown(f'<div class="rec-box {rec_style}">🤖 AI INSIGHT: {rec_text}</div>', unsafe_allow_html=True)
 
-if cur['MAP'] < 65:
-    status = "CIRCULATORY FAILURE"
-    if cur['SVR'] < 800:
-        action = "PROTOCOL: NOREPINEPHRINE (Target MAP > 65)"
-    elif cur['CO'] < 4.0:
-        action = "PROTOCOL: INOTROPE / VOLUME"
-    style = "alert-crit"
+with c2:
+    # Top Level Risk Score
+    risk = int(np.mean([
+        (100 - cur['MAP']) if cur['MAP'] < 65 else 0,
+        (cur['Lactate'] * 10),
+        (cur['HR'] - 100) if cur['HR'] > 100 else 0
+    ]))
+    risk = np.clip(risk, 0, 100)
+    st.metric("Total Decompensation Risk", f"{int(risk)}%", f"{int(risk - 10)}% vs 15m ago", delta_color="inverse")
 
-st.markdown(f"""
-<div class="alert-box {style}">
-    <div><span>STATUS:</span> {status}</div>
-    <div><span>RECOMMENDATION:</span> {action}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# --- 2. KPI GRID WITH SPARKLINES ---
-# Using Plotly sparklines inside the grid
+# --- 2. KPI MATRIX (Sparklines implied by context) ---
 cols = st.columns(6)
+def kpi(col, lbl, val, unit, color):
+    col.markdown(f"""
+    <div class="kpi-mini" style="border-top: 4px solid {color}">
+        <div class="kpi-lbl">{lbl}</div>
+        <div class="kpi-val" style="color:{color}">{val}</div>
+        <div style="font-size:0.8rem; color:#94a3b8">{unit}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-def kpi(col, label, val, unit, color, col_name, thresh_bad, invert=False):
-    is_bad = val < thresh_bad if not invert else val > thresh_bad
-    txt_color = "#ef4444" if is_bad else "#0f172a"
+kpi(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#d946ef")
+kpi(cols[1], "Cardiac Index", f"{cur['CI']:.1f}", "L/min", "#10b981")
+kpi(cols[2], "SVR Index", f"{cur['SVRI']:.0f}", "dyn", "#f59e0b")
+kpi(cols[3], "Stroke Vol", f"{cur['SV']:.0f}", "mL", "#0ea5e9")
+kpi(cols[4], "DO2 Index", f"{cur['DO2']:.0f}", "mL/m2", "#6366f1")
+kpi(cols[5], "Lactate", f"{cur['Lactate']:.1f}", "mmol", "#ef4444")
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# --- 3. PREDICTIVE CANVAS ---
+t1, t2 = st.tabs(["🔮 PREDICTIVE HEMODYNAMICS", "🫀 ORGAN MECHANICS"])
+
+with t1:
+    c_left, c_right = st.columns([1, 1])
     
-    with col:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-left: 4px solid {color}">
-            <div class="kpi-title">{label}</div>
-            <div class="kpi-val" style="color:{txt_color}">{val} <span class="kpi-unit">{unit}</span></div>
-        </div>
-        """, unsafe_allow_html=True)
-        # Sparkline below
-        st.plotly_chart(utils.plot_kpi_spark(df, col_name, color), use_container_width=True, config={'displayModeBar': False})
+    with c_left:
+        # The Money Plot: Bullseye with Prediction Vectors
+        st.markdown("**1. PREDICTIVE COMPASS**")
+        st.caption("Arrows indicate predicted response to Fluids (Blue) vs Pressors (Purple).")
+        fig_bull = utils.plot_predictive_bullseye(df, predictions, curr_time)
+        st.plotly_chart(fig_bull, use_container_width=True)
+    
+    with c_right:
+        # The Time Machine: Multiverse
+        st.markdown("**2. INTERVENTION SIMULATOR**")
+        st.caption("Projected MAP trajectory for different therapeutic strategies.")
+        fig_hor = utils.plot_horizon_multiverse(df, predictions, curr_time)
+        st.plotly_chart(fig_hor, use_container_width=True)
+        
+        if sim_mode == "Fluid Bolus (+500mL)":
+            st.success(f"SIMULATION: Fluid Bolus projected to increase MAP by {int(predictions['fluid'][-1] - predictions['natural'][-1])} mmHg.")
+        elif sim_mode == "Norepinephrine (+0.1mcg)":
+            st.warning(f"SIMULATION: Pressor projected to increase MAP by {int(predictions['pressor'][-1] - predictions['natural'][-1])} mmHg.")
 
-kpi(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#be185d", "MAP", 65)
-kpi(cols[1], "Cardiac Index", f"{cur['CI']:.1f}", "L/min", "#0ea5e9", "CI", 2.2)
-kpi(cols[2], "SVR Index", f"{cur['SVRI']:.0f}", "dyn", "#d97706", "SVRI", 800)
-kpi(cols[3], "Heart Rate", f"{cur['HR']:.0f}", "bpm", "#0369a1", "HR", 100, invert=True)
-kpi(cols[4], "Lactate", f"{cur['Lactate']:.1f}", "mmol", "#8b5cf6", "Lactate", 2.0, invert=True)
-kpi(cols[5], "Ea_dyn", f"{cur['Eadyn']:.2f}", "idx", "#10b981", "Eadyn", 1.2, invert=True)
+with t2:
+    c3, c4 = st.columns(2)
+    with c3:
+        st.markdown("**3. ORGAN RISK TOPOLOGY**")
+        st.caption("Geometric view of competing organ risks.")
+        fig_rad = utils.plot_organ_radar(df, curr_time)
+        st.plotly_chart(fig_rad, use_container_width=True)
+    with c4:
+        st.markdown("**4. FRANK-STARLING MECHANICS**")
+        st.caption("Preload vs Stroke Volume relationship.")
+        fig_star = utils.plot_starling_dynamic(df, curr_time)
+        st.plotly_chart(fig_star, use_container_width=True)
 
-# --- 3. DIAGNOSTIC PANEL ---
-c_left, c_right = st.columns([1, 1])
-
-with c_left:
-    st.markdown("**1. SHOCK PHENOTYPE (GDT Compass)**")
-    st.caption("Visualizes the hemodynamic diagnosis. Target is the Green Zone.")
-    fig_bull = utils.plot_gdt_bullseye(df, curr_time)
-    st.plotly_chart(fig_bull, use_container_width=True)
-
-with c_right:
-    st.markdown("**2. V-A COUPLING (Efficiency)**")
-    st.caption("Relationship between Cardiac Work (Pump) and Afterload (Pipes).")
-    fig_coup = utils.plot_coupling_curve(df, curr_time)
-    st.plotly_chart(fig_coup, use_container_width=True)
-
-# --- 4. ORGAN PROTECTION ---
-st.markdown("**3. ORGAN PERFUSION & RISK**")
-fig_renal = utils.plot_renal_cliff(df, curr_time)
-st.plotly_chart(fig_renal, use_container_width=True)
-
-# --- 5. SME FOOTNOTE ---
-with st.expander("ℹ️ CLINICAL LOGIC EXPLAINED"):
+# --- 4. EXPLANATION ---
+with st.expander("ℹ️ HOW THE DIGITAL TWIN WORKS"):
     st.markdown("""
-    **Physiology Engine:** This simulation uses a coupled Baroreflex Feedback Loop.
-    *   **Phase 1 (Compensated):** SVR drops due to sepsis. Baroreflex increases Sympathetic Tone -> HR & Contractility Rise. MAP is maintained.
-    *   **Phase 2 (Decompensated):** Vasoplegia exceeds cardiac reserve. MAP crashes. Lactate rises due to supply/demand mismatch ($DO_2 < 400$).
+    **1. Physics Engine:** This app runs a 0-D cardiovascular model (Windkessel approximation) in the background. It solves for Flow, Pressure, and Resistance based on simulated contractility and compliance.
     
-    **Decision Logic:**
-    *   **Vasoplegia:** Low SVR + High CI = Needs Vasopressors (Norepinephrine).
-    *   **Hypovolemia:** Low CI + High SVR = Needs Volume/Blood.
-    *   **Cardiogenic:** Low CI + High SVR + High Filling Pressures = Needs Inotropes (Dobutamine).
+    **2. Predictive Vectors:** The 'Compass' chart simulates 30 minutes into the future for 3 scenarios (Do nothing, Give Fluids, Give Pressors). The arrows show you *exactly* where the patient will land.
+    
+    **3. Organ Radar:** Normalizes risks across Renal (Low MAP), Cardiac (High Rate), and Metabolic (High Lactate) axes to visualize 'Therapeutic Conflict'.
     """)
