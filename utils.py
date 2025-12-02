@@ -2,267 +2,295 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from scipy.stats import norm
+from scipy.signal import savgol_filter
+from sklearn.linear_model import LinearRegression
 
-# --- 1. ADVANCED MATH CLASSES ---
+# --- 1. DESIGN SYSTEM (Clinical Light Mode) ---
+THEME = {
+    'bg': '#ffffff',
+    'text': '#1f2937',
+    'grid': '#f3f4f6',
+    # Physiology
+    'hr': '#0284c7',       # Vivid Blue (Heart Rate)
+    'hr_kalman': '#0369a1',# Darker Blue (True State)
+    'map': '#be185d',      # Magenta (Perfusion Pressure)
+    'pp': '#8b5cf6',       # Violet (Stroke Volume/Pulse Pressure)
+    'cei': '#d97706',      # Amber (Effort Index)
+    'entropy': '#059669',  # Emerald (Complexity)
+    # Zones
+    'zone_ok': 'rgba(16, 185, 129, 0.1)',
+    'zone_warn': 'rgba(245, 158, 11, 0.1)',
+    'zone_crit': 'rgba(239, 68, 68, 0.1)'
+}
+
+# --- 2. ADVANCED MATH CLASSES ---
 
 class KalmanFilter1D:
     """
-    A pure NumPy implementation of a 1D Kalman Filter.
-    mathematically estimates the 'True' state of a system from noisy measurements.
-    
-    Why it saves lives: It ignores sensor artifacts (coughing, movement) 
-    and shows the doctor the REAL trend, reducing alarm fatigue.
+    Separates true physiological signal from sensor noise.
     """
-    def __init__(self, process_variance, measurement_variance, estimated_measurement_variance):
-        self.process_variance = process_variance
-        self.measurement_variance = measurement_variance
-        self.estimated_measurement_variance = estimated_measurement_variance
-        self.posteri_estimate = 0.0
-        self.posteri_error_estimate = 1.0
+    def __init__(self, process_var, measure_var):
+        self.process_var = process_var
+        self.measure_var = measure_var
+        self.posteri_est = 0.0
+        self.posteri_error = 1.0
 
     def update(self, measurement):
-        # 1. Prediction Update
-        priori_estimate = self.posteri_estimate
-        priori_error_estimate = self.posteri_error_estimate + self.process_variance
+        priori_est = self.posteri_est
+        priori_error = self.posteri_error + self.process_var
+        
+        blending = priori_error / (priori_error + self.measure_var)
+        self.posteri_est = priori_est + blending * (measurement - priori_est)
+        self.posteri_error = (1 - blending) * priori_error
+        return self.posteri_est
 
-        # 2. Measurement Update
-        blending_factor = priori_error_estimate / (priori_error_estimate + self.measurement_variance)
-        self.posteri_estimate = priori_estimate + blending_factor * (measurement - priori_estimate)
-        self.posteri_error_estimate = (1 - blending_factor) * priori_error_estimate
-
-        return self.posteri_estimate
-
-def calculate_sample_entropy(L, m=2, r=0.2):
+def calc_entropy(series, window=30):
     """
-    Computes Sample Entropy (SampEn), a measure of physiological complexity.
-    
-    Math: Counts frequency of patterns of length m vs m+1 within tolerance r.
-    Clinical Meaning: 
-    - High Entropy = Healthy (Complex, adaptable system).
-    - Low Entropy = Sepsis/Failure (Rigid, metronomic system).
+    Computes rolling sample entropy (physiological complexity).
     """
-    # Simplified vectorization for speed in demo
-    N = len(L)
-    if N < 10: return 0
-    
-    # Normalize
-    L = (L - np.mean(L)) / np.std(L)
-    
-    # This is a simplified proxy for SampEn for real-time visualization speed
-    # Real SampEn is O(N^2), this uses standard deviation of differences as a proxy
-    # for 'smoothness' or loss of complexity.
-    diffs = np.diff(L)
-    complexity = np.std(diffs) 
-    
-    return complexity
+    # Simplified fast proxy for visualization: 
+    # Inverse of standard deviation of differences (Smoothness = Low Entropy)
+    return series.rolling(window).apply(lambda x: np.std(np.diff(x))).fillna(1.0)
 
-# --- 2. SIMULATION ENGINE (Stochastic Differential Equation Proxy) ---
+# --- 3. PHYSIOLOGICAL SIMULATION (Pink Noise + Pathophysiology) ---
 
-def simulate_advanced_dynamics(mins=720):
+def simulate_comprehensive_patient(mins=720):
     t = np.arange(mins)
     
-    # 1. Generate "True" Biological State (Hidden Markov Model concept)
-    # Baseline
-    true_hr = np.ones(mins) * 75
-    true_map = np.ones(mins) * 90
-    
-    # Event: Sepsis (loss of complexity + hemodynamic drift)
+    # 1/f Pink Noise Generator (Biologically Realistic)
+    def pink_noise(n, amp=1.0):
+        white = np.random.normal(0, 1, n)
+        b = [0.05] * 20 # Low pass filter
+        return np.convolve(white, b, mode='same') * amp
+
+    # Base Vitals
+    true_hr = 72 + pink_noise(mins, 5)
+    true_sbp = 120 + pink_noise(mins, 3)
+    true_dbp = 80 + pink_noise(mins, 2)
+    pi = 4.0 + pink_noise(mins, 0.5)
+
+    # EVENT: Septic "Uncoupling" (Starts T=250)
+    # The heart works harder (HR Up) but pumps less (PP Down).
     start = 250
     
-    # Drift dynamics
-    drift_curve = np.linspace(0, 40, mins-start)**1.2
-    true_hr[start:] += drift_curve  # Tachycardia
-    true_map[start:] -= (drift_curve * 0.8) # Hypotension
+    # 1. Vasodilation/Constriction Flux
+    drift_pi = np.linspace(0, 3.5, mins-start)
+    pi[start:] = np.maximum(0.2, pi[start:] - drift_pi)
     
-    # 2. Add Biological Variability (1/f Noise)
-    # Healthy people have HIGH variability (Pink Noise)
-    # Sick people have LOW variability (Brownian/Red Noise or Sine wave)
+    # 2. Pulse Pressure Narrowing (Preload Failure)
+    sbp_drop = np.linspace(0, 35, mins-start)
+    dbp_drop = np.linspace(0, 5, mins-start) # DBP stays higher due to clamping
+    true_sbp[start:] -= sbp_drop
+    true_dbp[start:] -= dbp_drop
     
-    def generate_noise(n, complexity_level):
-        # Complexity level 1.0 = High (Healthy), 0.1 = Low (Sick)
-        noise = np.random.normal(0, 1, n)
-        # Sickness dampens the high frequencies
-        if complexity_level < 0.5:
-             noise = np.convolve(noise, np.ones(10)/10, mode='same')
-        return noise * 2.0
-    
-    # Apply variable noise based on patient state
-    noise_vector = np.array([generate_noise(1, 1.0 if i < 350 else 0.2)[0] for i in range(mins)])
-    
-    # 3. Add Sensor Noise (Measurement Error)
-    # Kalman filter target
-    sensor_artifact = np.random.normal(0, 4, mins) # High variance noise
-    
-    # Combine
-    observed_hr = true_hr + noise_vector + sensor_artifact
-    observed_map = true_map + (noise_vector*0.5) + (sensor_artifact*0.5)
-    
-    # Create DataFrame
-    df = pd.DataFrame({
-        'Observed_HR': observed_hr, 
-        'Observed_MAP': observed_map,
-        'True_HR': true_hr, # In real life, we don't know this (Kalman estimates it)
-        'True_MAP': true_map
-    }, index=t)
-    
-    return df
+    # 3. Compensatory Tachycardia
+    hr_rise = np.linspace(0, 45, mins-start)
+    true_hr[start:] += hr_rise
 
-# --- 3. ANALYTICS PIPELINE ---
+    # 4. Loss of Entropy (Sepsis Signature)
+    # Signal becomes "smoother" (metronomic)
+    dampening = np.linspace(1, 0.1, mins-start)
+    true_hr[start:] = true_hr[start:] * dampening + (true_hr[start:].mean() * (1-dampening))
 
-def run_kalman_smoothing(df):
-    """
-    Applies the Kalman Filter to the noisy observed data.
-    """
-    kf = KalmanFilter1D(process_variance=1e-5, measurement_variance=0.1, estimated_measurement_variance=0.1)
-    
-    kalman_hr = []
-    kf.posteri_estimate = df['Observed_HR'].iloc[0]
-    
-    for val in df['Observed_HR']:
-        kalman_hr.append(kf.update(val))
-        
-    df['Kalman_HR'] = kalman_hr
-    return df
+    # 5. Add Sensor Noise for Kalman Demo
+    sensor_noise = np.random.normal(0, 3, mins) # Movement artifact
+    observed_hr = true_hr + sensor_noise
 
-def run_complexity_analysis(df, window=60):
-    """
-    Rolling Entropy calculation.
-    """
-    entropy = df['Kalman_HR'].rolling(window).apply(lambda x: calculate_sample_entropy(x))
-    df['Entropy'] = entropy.fillna(1.0)
+    # Build DataFrame
+    df = pd.DataFrame({'Obs_HR': observed_hr, 'True_HR': true_hr, 'SBP': true_sbp, 'DBP': true_dbp, 'PI': pi}, index=t)
+    
+    # --- DERIVED METRICS ---
+    
+    # Kalman Filtering
+    kf = KalmanFilter1D(1e-5, 0.5)
+    df['Kalman_HR'] = [kf.update(x) for x in df['Obs_HR']]
+    
+    # Hemodynamics
+    df['MAP'] = (df['SBP'] + 2*df['DBP']) / 3
+    df['PP'] = df['SBP'] - df['DBP'] # Pulse Pressure
+    
+    # Advanced Prognostics
+    df['CEI'] = df['Kalman_HR'] / df['PP'] # Cardiac Effort Index
+    df['Entropy'] = calc_entropy(df['Obs_HR']) # Complexity
+    
     return df
 
 # --- 4. VISUALIZATION ENGINES ---
 
-THEME = {
-    'bg': '#0f172a', # Deep Space Blue (Commercial Dark Mode)
-    'paper': '#1e293b',
-    'text': '#f1f5f9',
-    'accent': '#38bdf8', # Cyan
-    'kalman': '#f43f5e', # Rose
-    'raw': '#475569',    # Slate (for noise)
-    'grid': '#334155'
-}
-
-def plot_kalman_separation(df, curr_time):
+def plot_command_strip(df, curr_time):
     """
-    Visualizes the power of the Kalman Filter.
-    Shows Raw Data (Gray/Noisy) vs Mathematical Estimate (Red/Smooth).
+    The Master Timeline:
+    Track 1: Kalman-Filtered HR (Signal vs Noise).
+    Track 2: MAP & Pulse Pressure (The "Life Force").
+    """
+    start = max(0, curr_time - 180)
+    data = df.iloc[start:curr_time]
+    
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+        specs=[[{"secondary_y": False}], [{"secondary_y": False}]]
+    )
+    
+    # --- ROW 1: HR & Kalman ---
+    # Raw Noise (Ghost)
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['Obs_HR'],
+        mode='markers', marker=dict(color='#9ca3af', size=2, opacity=0.4),
+        name='Raw Sensor'
+    ), row=1, col=1)
+    
+    # True State (Kalman)
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['Kalman_HR'],
+        mode='lines', line=dict(color=THEME['hr'], width=2.5),
+        name='True HR (Kalman)'
+    ), row=1, col=1)
+    
+    # --- ROW 2: Hemodynamics ---
+    # MAP Line
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['MAP'],
+        mode='lines', line=dict(color=THEME['map'], width=2),
+        name='MAP'
+    ), row=2, col=1)
+    
+    # Pulse Pressure Area (Band)
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['SBP'], line=dict(width=0), showlegend=False
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['DBP'], line=dict(width=0), 
+        fill='tonexty', fillcolor='rgba(139, 92, 246, 0.15)',
+        name='Pulse Pressure'
+    ), row=2, col=1)
+
+    fig.update_layout(
+        template="plotly_white", height=400, margin=dict(l=0, r=0, t=20, b=0),
+        hovermode="x unified", legend=dict(orientation="h", y=1.05, x=0)
+    )
+    fig.update_yaxes(title="Heart Rate", row=1, col=1, gridcolor=THEME['grid'])
+    fig.update_yaxes(title="Pressures (mmHg)", row=2, col=1, gridcolor=THEME['grid'])
+    
+    return fig
+
+def plot_hemo_loop(df, curr_time):
+    """
+    Frank-Starling Proxy: HR (Cost) vs PP (Benefit).
     """
     start = max(0, curr_time - 120)
     data = df.iloc[start:curr_time]
     
     fig = go.Figure()
     
-    # 1. Raw Sensor Data (Ghost Trace)
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['Observed_HR'],
-        mode='markers', marker=dict(color=THEME['raw'], size=3, opacity=0.5),
-        name='Raw Sensor (Noisy)'
-    ))
-    
-    # 2. Kalman Estimate (The Signal)
-    fig.add_trace(go.Scatter(
-        x=data.index, y=data['Kalman_HR'],
-        mode='lines', line=dict(color=THEME['accent'], width=3),
-        name='Kalman Estimate (True State)'
-    ))
-    
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor=THEME['paper'],
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=300,
-        title=dict(text="<b>Bayesian State Estimation (Kalman Filter)</b>", font=dict(size=14)),
-        margin=dict(l=10, r=10, t=40, b=10),
-        xaxis=dict(showgrid=True, gridcolor=THEME['grid'], title="Time (min)"),
-        yaxis=dict(showgrid=True, gridcolor=THEME['grid'], title="Heart Rate (bpm)"),
-        legend=dict(orientation="h", y=1.02, x=0)
-    )
-    return fig
+    # Background Zones
+    fig.add_shape(type="rect", x0=40, y0=40, x1=90, y1=100, fillcolor=THEME['zone_ok'], line_width=0, layer="below")
+    fig.add_shape(type="rect", x0=100, y0=0, x1=160, y1=35, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
+    fig.add_annotation(x=130, y=15, text="CARDIAC FAILURE", showarrow=False, font=dict(color="red", size=10))
 
-def plot_phase_space_3d(df, curr_time):
-    """
-    3D Phase Space Reconstruction (Time-Delay Embedding).
-    Math: (x(t), x(t-tau), x(t-2tau))
-    Meaning: Visualizes the 'Attractor' of the heart.
-    - Ball/Cloud = Healthy Chaos.
-    - Flat Line/Loop = Pathological Rigidity.
-    """
-    tau = 2 # Time lag
+    # Trajectory
+    fig.add_trace(go.Scatter(
+        x=data['Kalman_HR'], y=data['PP'],
+        mode='lines', line=dict(width=3, color=THEME['pp']), opacity=0.8,
+        name='Work Loop'
+    ))
     
-    # Get recent history
-    data = df['Kalman_HR'].iloc[max(0, curr_time-300):curr_time].values
-    
-    if len(data) < 10: return go.Figure()
-    
-    # Embed
-    x = data[:-2*tau]
-    y = data[tau:-tau]
-    z = data[2*tau:]
-    
-    # Color mapping based on time (fade tail)
-    colors = np.linspace(0, 1, len(x))
-    
-    fig = go.Figure(data=[go.Scatter3d(
-        x=x, y=y, z=z,
-        mode='lines',
-        line=dict(
-            color=colors,
-            colorscale='Viridis',
-            width=4
-        )
-    )])
-    
-    # Add current head
-    fig.add_trace(go.Scatter3d(
-        x=[x[-1]], y=[y[-1]], z=[z[-1]],
-        mode='markers', marker=dict(size=8, color='red')
+    # Current Head
+    fig.add_trace(go.Scatter(
+        x=[data['Kalman_HR'].iloc[-1]], y=[data['PP'].iloc[-1]],
+        mode='markers', marker=dict(size=12, color=THEME['map'], symbol='diamond'),
+        name='Current'
     ))
 
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor=THEME['paper'],
-        height=350,
-        title=dict(text="<b>Attractor Geometry (3D Phase Space)</b>", font=dict(size=14)),
-        margin=dict(l=0, r=0, t=30, b=0),
-        scene=dict(
-            xaxis=dict(title='t', showgrid=True, gridcolor=THEME['grid'], backgroundcolor=THEME['bg']),
-            yaxis=dict(title='t-1', showgrid=True, gridcolor=THEME['grid'], backgroundcolor=THEME['bg']),
-            zaxis=dict(title='t-2', showgrid=True, gridcolor=THEME['grid'], backgroundcolor=THEME['bg']),
-        )
+        template="plotly_white", height=300, 
+        title=dict(text="<b>Hemodynamic Work Loop</b>", font=dict(size=12)),
+        xaxis=dict(title="HR (Input Cost)", showgrid=True, gridcolor=THEME['grid']),
+        yaxis=dict(title="Pulse Press. (Output)", showgrid=True, gridcolor=THEME['grid']),
+        margin=dict(l=10, r=10, t=40, b=10), showlegend=False
     )
     return fig
 
-def plot_entropy_monitor(df, curr_time):
+def plot_advanced_metrics(df, curr_time):
     """
-    Plots the breakdown of physiological complexity.
+    Strip chart for CEI (Effort) and Entropy (Complexity).
     """
     start = max(0, curr_time - 180)
     data = df.iloc[start:curr_time]
     
-    fig = go.Figure()
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1)
     
-    # Entropy Line
+    # CEI
     fig.add_trace(go.Scatter(
-        x=data.index, y=data['Entropy'],
-        mode='lines', line=dict(color='#a855f7', width=2), # Purple
-        fill='tozeroy', fillcolor='rgba(168, 85, 247, 0.1)',
-        name='Complexity (SampEn)'
+        x=data.index, y=data['CEI'], fill='tozeroy', 
+        fillcolor='rgba(217, 119, 6, 0.1)', line=dict(color=THEME['cei']), name='Cardiac Effort'
+    ), row=1, col=1)
+    fig.add_hline(y=3.0, line_dash='dot', line_color='red', row=1, col=1)
+    
+    # Entropy
+    fig.add_trace(go.Scatter(
+        x=data.index, y=data['Entropy'], line=dict(color=THEME['entropy']), name='Hemo-Entropy'
+    ), row=2, col=1)
+    
+    fig.update_layout(template="plotly_white", height=300, margin=dict(l=0,r=0,t=20,b=0), showlegend=False)
+    fig.update_yaxes(title="Effort Idx", row=1, col=1, gridcolor=THEME['grid'])
+    fig.update_yaxes(title="Entropy", row=2, col=1, gridcolor=THEME['grid'])
+    
+    return fig
+
+def plot_3d_attractor(df, curr_time):
+    """
+    3D Phase Space Reconstruction (Light Mode Edition).
+    """
+    tau = 2
+    data = df['Kalman_HR'].iloc[max(0, curr_time-200):curr_time].values
+    if len(data) < 10: return go.Figure()
+    
+    x, y, z = data[:-2*tau], data[tau:-tau], data[2*tau:]
+    colors = np.linspace(0, 1, len(x))
+    
+    fig = go.Figure(data=[go.Scatter3d(
+        x=x, y=y, z=z, mode='lines',
+        line=dict(color=colors, colorscale='Bluered', width=5)
+    )])
+    
+    # Current Point
+    fig.add_trace(go.Scatter3d(
+        x=[x[-1]], y=[y[-1]], z=[z[-1]], mode='markers', marker=dict(size=8, color='red')
+    ))
+
+    fig.update_layout(
+        template="plotly_white", height=300,
+        title=dict(text="<b>Attractor (Phase Space)</b>", font=dict(size=12)),
+        margin=dict(l=0, r=0, t=30, b=0),
+        scene=dict(
+            xaxis=dict(title='', showticklabels=False, backgroundcolor=THEME['bg']),
+            yaxis=dict(title='', showticklabels=False, backgroundcolor=THEME['bg']),
+            zaxis=dict(title='', showticklabels=False, backgroundcolor=THEME['bg']),
+        )
+    )
+    return fig
+
+def plot_heatmap_fingerprint(df, curr_time):
+    """
+    The Genetic Barcode of Instability.
+    """
+    start = max(0, curr_time - 60)
+    subset = df.iloc[start:curr_time][['Kalman_HR', 'MAP', 'PP', 'PI', 'Entropy']]
+    
+    # Z-Score Normalization
+    z = (subset - subset.mean()) / subset.std()
+    z = z.T # Transpose for heatmap
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=z.values, x=z.columns, y=z.index,
+        colorscale='RdBu_r', zmid=0, showscale=False
     ))
     
-    # Sepsis Threshold
-    fig.add_hline(y=0.5, line_dash='dot', line_color='red', annotation_text="De-complexification Threshold (Sepsis)")
-    
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor=THEME['paper'],
-        plot_bgcolor='rgba(0,0,0,0)',
-        height=250,
-        title=dict(text="<b>System Complexity (Sample Entropy)</b>", font=dict(size=14)),
-        margin=dict(l=10, r=10, t=40, b=10),
-        yaxis=dict(title="Entropy (σ)", showgrid=True, gridcolor=THEME['grid']),
-        xaxis=dict(showgrid=True, gridcolor=THEME['grid'])
+        template="plotly_white", height=200, 
+        title=dict(text="<b>Deviation Fingerprint</b>", font=dict(size=12)),
+        margin=dict(l=0, r=0, t=30, b=0),
+        xaxis=dict(showticklabels=False),
+        yaxis=dict(tickfont=dict(size=10))
     )
     return fig
