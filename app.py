@@ -63,7 +63,6 @@ with c3:
     st.markdown(f"<div style='text-align:right; font-weight:bold; font-size:1.5rem; color:{'red' if risk>100 else 'green'}'>RISK: {risk}</div>", unsafe_allow_html=True)
 
 # --- 2. ROW 1: SPARKLINE KPI STRIP (All key vitals) ---
-# Create a container for the sparkline strip
 st.markdown('<div class="pan-card" style="margin-bottom:15px; padding: 5px;">', unsafe_allow_html=True)
 sp_cols = st.columns(6)
 
@@ -111,59 +110,4 @@ with r2_3:
 r3_1, r3_2, r3_3, r3_4 = st.columns(4)
 
 with r3_1:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">4. STARLING (PRELOAD)</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_starling(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_2:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">5. V-A COUPLING</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_svr_co(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_3:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">6. WORK LOOP (PV)</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_pv_proxy(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_4:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">7. HEMO-COHERENCE</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_coherence(df, curr_time), use_container_width=True)
-    st.caption("Red = Uncoupling (Instability)")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# --- 5. ROW 4: ADVANCED COMPUTATIONAL ---
-r4_1, r4_2 = st.columns([1, 3])
-
-with r4_1:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">8. AUTONOMIC SPECTRUM</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_spectral_density(df, curr_time), use_container_width=True)
-    st.caption("Low Power = Autonomic Failure")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r4_2:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">AI SUMMARY & PROTOCOL</div>', unsafe_allow_html=True)
-    
-    # Logic Engine
-    dx = "STABLE"
-    plan = "Monitor"
-    if cur['Lactate'] > 4.0:
-        dx = "SEVERE SEPTIC SHOCK"
-        plan = "1. FLUIDS (30mL/kg) 2. NOREPINEPHRINE 3. ANTIBIOTICS"
-    elif cur['SVR'] < 800:
-        dx = "DISTRIBUTIVE SHOCK (Early)"
-        plan = "PRESSORS (Target MAP > 65)"
-        
-    st.markdown(f"#### DIAGNOSIS: <span class='badge b-crit'>{dx}</span>", unsafe_allow_html=True)
-    st.markdown(f"**PROTOCOL:** {plan}")
-    st.markdown(f"""
-    - **Renal Status:** {'Oliguric (<0.5 mL/kg/hr)' if cur['UrineOutput'] < 0.5 else 'Adequate'}
-    - **O2 Supply/Demand:** {'Mismatch (High Lactate)' if cur['Lactate'] > 2 else 'Balanced'}
-    - **Coupling:** {'Vasodilation Dominant' if cur['SVR'] < 800 else 'Normal'}
-    """)
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('<div class="pan-card">', unsafe_a
