@@ -1,116 +1,133 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go  
-import utils
+import utils # Importing the new robust utils
 
 # --- Config ---
-st.set_page_config(page_title="Smart ICU Monitor", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="ICU Sentinel AI", layout="wide", initial_sidebar_state="collapsed")
 
-st.title("🏥 Smart ICU Monitor: Early Warning System")
+# Custom CSS for clinical dashboard look
 st.markdown("""
-**Status**: Monitoring hemodynamic stability via Multivariate SPC.
-**Goal**: Detect decompensation *before* vitals breach standard alarm limits.
-""")
+<style>
+    .block-container {padding-top: 1rem; padding-bottom: 0rem;}
+    h1, h2, h3 {margin-bottom: 0rem;}
+    .stMetric {background-color: #1E1E1E; padding: 10px; border-radius: 5px; border: 1px solid #333;}
+    .big-font {font-size:20px !important; font-weight: bold;}
+</style>
+""", unsafe_allow_html=True)
 
-# --- 1. Load Data ---
+# --- 1. Data Loading & Processing ---
 @st.cache_data
-def get_data():
+def get_sim_data():
     return utils.simulate_patient(mins_total=720)
 
-df_full = get_data()
+df_full = get_sim_data()
 VARS = ['HR','SBP','SpO2','RR','PI']
 
-# --- 2. Compute Analytics (Full History) ---
-with st.spinner("Processing physiological signals..."):
-    # Fit model on first 2 hours (assumed baseline)
-    residuals_full, cov_est, lag = utils.fit_var_and_residuals_full(df_full[VARS], baseline_window=120)
-    # Compute Risk
-    risk_full, cov_inv = utils.compute_mahalanobis_risk(residuals_full, cov_est)
+with st.spinner("Analyzing hemodynamic stability..."):
+    # Z-Score Normalization (Standardization against patient baseline)
+    z_full, cov_est = utils.fit_var_and_residuals_full(df_full[VARS], baseline_window=120)
+    # Mahalanobis Risk Score
+    risk_full, cov_inv = utils.compute_mahalanobis_risk(z_full, cov_est)
+    # Calculate Shock Index
+    df_full['SI'] = df_full['HR'] / df_full['SBP']
 
-# --- 3. Controls ---
+# --- 2. Sidebar Controls ---
 with st.sidebar:
-    st.header("Simulation Control")
-    curr_time = st.slider("Time Elapsed (min)", 60, 720, 720)
-    view_window = st.selectbox("Zoom Window (min)", [60, 120, 240, 720], index=2)
-    st.info("Tip: Slide 'Time Elapsed' back to min 400 to see the stable state, then forward to 600 to watch the shock develop.")
+    st.header("Simulation Timeline")
+    curr_time = st.slider("Time (minutes)", 60, 720, 720)
+    view_window = st.selectbox("Lookback Window", [60, 120, 240], index=1)
+    
+    st.markdown("### Clinical Scenario")
+    st.info("""
+    **Patient ID:** 8392-A
+    **Admit:** Post-Op Abdominal
+    **Event:** Occult Bleeding
+    
+    **Instructions:**
+    1. Move slider to **min 350** (Stable).
+    2. Move to **min 450** (Compensated Shock: HR up, PI down, BP normal).
+    3. Move to **min 600** (Decompensation: Hypotension).
+    """)
 
-# --- 4. Data Slicing ---
+# --- 3. Data Slicing ---
 start_idx = max(0, curr_time - view_window)
 end_idx = curr_time
-df_view = df_full.iloc[start_idx:end_idx].reset_index(drop=True)
-risk_view = risk_full[start_idx:end_idx]
-resid_view = residuals_full[start_idx:end_idx]
-t_axis = np.arange(start_idx, end_idx)
 
-# --- 5. Alert Banner ---
+# Slicing for plots
+df_view = df_full.iloc[start_idx:end_idx]
+z_view = z_full.iloc[start_idx:end_idx]
+t_axis = df_view.index
+
+# Current Instant values
+current_vals = df_full.iloc[curr_time-1]
 current_risk = risk_full[curr_time-1]
-if current_risk < 15:
-    st.success(f"✅ PATIENT STABLE (Risk Score: {current_risk:.1f})")
-elif current_risk < 30:
-    st.warning(f"⚠️ WARNING: PHYSIOLOGICAL DEVIATION (Risk Score: {current_risk:.1f})")
-else:
-    st.error(f"🚨 CRITICAL INSTABILITY DETECTED (Risk Score: {current_risk:.1f})")
+current_si = current_vals['SI']
 
-# --- 6. Vitals & Risk (The "What") ---
-c1, c2 = st.columns([2, 1])
+# --- 4. Dashboard Header (Heads Up Display) ---
+col_h1, col_h2, col_h3, col_h4 = st.columns([2, 1, 1, 2])
 
-with c1:
-    st.subheader("1. Hemodynamic Trends")
-    fig_vitals = utils.plot_vitals(df_view, t_axis)
-    st.plotly_chart(fig_vitals, use_container_width=True)
+with col_h1:
+    st.title("🏥 ICU Sentinel")
+    st.caption(f"Real-time Hemodynamic Monitoring | T={curr_time}min")
 
-with c2:
-    st.subheader("2. Integrated Instability")
-    fig_risk = utils.plot_risk_enhanced(risk_view, t_axis)
-    st.plotly_chart(fig_risk, use_container_width=True)
-    
-    # Mini-KPIs
-    last = df_full.iloc[curr_time-1]
-    c2a, c2b = st.columns(2)
-    c2a.metric("Shock Index", f"{(last['HR']/last['SBP']):.2f}", delta_color="inverse")
-    c2b.metric("Perfusion Index", f"{last['PI']:.2f}", delta_color="normal")
+with col_h2:
+    st.metric("Risk Score", f"{current_risk:.1f}", 
+              delta="High Risk" if current_risk > 25 else "Stable", 
+              delta_color="inverse")
 
-# --- 7. Root Cause Analysis (The "Why") ---
+with col_h3:
+    st.metric("Shock Index", f"{current_si:.2f}", 
+              delta="Warning" if current_si > 0.9 else "Normal", 
+              delta_color="inverse")
+
+with col_h4:
+    # Clinical Action Logic
+    if current_risk < 15:
+        st.success("✅ **PATIENT STABLE**\n\nContinue routine monitoring.")
+    elif current_risk < 25:
+        st.warning("⚠️ **EARLY WARNING: COMPENSATORY EFFORT**\n\nCheck perfusion (PI). Assess fluid responsiveness.")
+    else:
+        st.error("🚨 **CRITICAL: DECOMPENSATION**\n\nImmediate assessment required. Evaluate for Shock Protocol.")
+
 st.divider()
-col_left, col_right = st.columns(2)
+
+# --- 5. Main Clinical Workspace ---
+# Left Column: Timeline Trends (The "Story")
+# Right Column: Instantaneous Profile (The "Status")
+
+col_left, col_right = st.columns([2, 1])
 
 with col_left:
-    st.subheader("3. Root Cause Analysis (Contribution)")
-    # Calculate contributions for the LAST minute only
-    r_t = residuals_full[curr_time-1]
-    # Contribution = residual * weighted_residual
-    contrib = r_t * (cov_inv @ r_t)
-    # Convert to meaningful percentage
-    contrib_abs = np.abs(contrib)
-    contrib_norm = (contrib_abs / np.sum(contrib_abs)) * 100
+    st.markdown("#### 1. Hemodynamic & Perfusion Trends")
+    # Improved Vitals Plot (Coupled HR/BP + SI + PI)
+    fig_vitals = utils.plot_combined_vitals(df_view, t_axis, df_view['SI'])
+    st.plotly_chart(fig_vitals, use_container_width=True)
     
-    # Color code: Red if residual was positive (High), Blue if negative (Low)
-    # This tells us: "HR contributing 40% because it is HIGH"
-    colors = ['#ef553b' if r_t[i] > 0 else '#636efa' for i in range(5)]
-    
-    fig_bar = go.Figure(go.Bar(
-        x=VARS, 
-        y=contrib_norm,
-        marker_color=colors,
-        text=[f"{val:.1f}%" for val in contrib_norm],
-        textposition='auto'
-    ))
-    fig_bar.update_layout(
-        title=f"Which vitals are driving the alarm? (t={curr_time})",
-        yaxis_title="Contribution to Risk (%)",
-        height=350
-    )
-    st.plotly_chart(fig_bar, use_container_width=True)
-    st.caption("Red = Variable is higher than predicted. Blue = Variable is lower than predicted.")
+    st.markdown("#### 2. Anatomy of Instability (Contribution Heatmap)")
+    # Heatmap is better than bar chart because it shows the SEQUENCE of deterioration
+    fig_heat = utils.plot_temporal_contribution(z_view, VARS)
+    st.plotly_chart(fig_heat, use_container_width=True)
 
 with col_right:
-    st.subheader("4. State Space Trajectory")
-    fig_pca = utils.plot_pca_clinical(df_full, curr_time, baseline_window=120)
-    st.plotly_chart(fig_pca, use_container_width=True)
+    st.markdown("#### 3. Current Status")
+    
+    # A. Risk Gauge
+    fig_gauge = utils.plot_risk_gauge(current_risk)
+    st.plotly_chart(fig_gauge, use_container_width=True)
+    
+    # B. Physiological Footprint (Radar)
+    # This helps distinguish 'why' the risk is high (Resp vs Hemo)
+    fig_radar = utils.plot_clinical_radar(current_vals, df_full.iloc[:120].mean())
+    st.plotly_chart(fig_radar, use_container_width=True)
 
-# --- 8. Heatmap (Deep Dive) ---
-st.subheader("5. Clinical Deviation Matrix (Deep Dive)")
-fig_heat = utils.plot_deviation_matrix(resid_view, VARS)
-st.plotly_chart(fig_heat, use_container_width=True)
+    # C. Raw Vitals Table (Quick Glance)
+    st.markdown("#### Live Vitals")
+    cols = st.columns(2)
+    cols[0].metric("HR", f"{int(current_vals['HR'])}")
+    cols[1].metric("SBP", f"{int(current_vals['SBP'])}")
+    cols[0].metric("SpO2", f"{int(current_vals['SpO2'])}%")
+    cols[1].metric("RR", f"{int(current_vals['RR'])}")
+    st.metric("Perfusion Index (PI)", f"{current_vals['PI']:.2f}")
+    if current_vals['PI'] < 1.0:
+        st.caption("🔴 Poor Peripheral Perfusion")
