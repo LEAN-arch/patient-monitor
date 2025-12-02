@@ -139,7 +139,7 @@ def plot_predictive_compass(df, preds, curr_time):
     fig.add_annotation(x=cur['CI']*1.05, y=preds['press'][-1], ax=cur['CI'], ay=cur['MAP'], xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['do2'], text="PRESSOR", font=dict(color=THEME['do2']))
 
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=280, margin=dict(l=10,r=10,t=30,b=10), title="<b>Predictive Compass</b>",
+                      height=300, margin=dict(l=10,r=10,t=40,b=10), title="<b>Predictive Compass</b>",
                       xaxis=dict(title="CI", range=[1.5, 6], gridcolor=THEME['grid']), yaxis=dict(title="MAP", range=[40, 100], gridcolor=THEME['grid']), showlegend=False)
     return fig
 
@@ -152,8 +152,30 @@ def plot_multiverse(df, preds, curr_time):
     fig.add_trace(go.Scatter(x=preds['time'], y=preds['press'], line=dict(color=THEME['do2'])))
     fig.add_hline(y=65, line_color='red', line_dash='dot')
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=280, margin=dict(l=10,r=10,t=30,b=10), title="<b>Intervention Horizon</b>",
+                      height=300, margin=dict(l=10,r=10,t=30,b=10), title="<b>Intervention Horizon</b>",
                       xaxis=dict(gridcolor=THEME['grid']), yaxis=dict(title="MAP", gridcolor=THEME['grid']), showlegend=False)
+    return fig
+
+def plot_organ_radar(df, curr_time):
+    cur = df.iloc[-1]
+    # Normalize Risks
+    risk_renal = np.clip((65 - cur['MAP'])/20, 0, 1)
+    risk_cardiac = np.clip((cur['HR'] - 100)/50, 0, 1)
+    risk_meta = np.clip((cur['Lactate'] - 1.5)/4, 0, 1)
+    risk_perf = np.clip((2.2 - cur['CI'])/1.0, 0, 1)
+    
+    r = [risk_renal, risk_cardiac, risk_meta, risk_perf, risk_renal]
+    theta = ['Renal', 'Cardiac', 'Metabolic', 'Perfusion', 'Renal']
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(r=[0.2]*5, theta=theta, fill='toself', fillcolor=THEME['zone_ok'], line_width=0))
+    fig.add_trace(go.Scatterpolar(r=r, theta=theta, fill='toself', fillcolor=THEME['zone_crit'], line=dict(color='red', width=2)))
+    
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+        polar=dict(radialaxis=dict(visible=False, range=[0, 1]), bgcolor='rgba(0,0,0,0)'),
+        showlegend=False, height=250, margin=dict(l=30,r=30,t=30,b=20),
+        title="<b>Organ Risk Topology</b>"
+    )
     return fig
 
 def plot_starling_vector(df, curr_time):
@@ -164,7 +186,7 @@ def plot_starling_vector(df, curr_time):
     fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', line=dict(color=THEME['ci'])))
     fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], mode='markers', marker=dict(color='white', size=8, symbol='triangle-up')))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Starling Vector</b>",
+                      height=250, margin=dict(l=10,r=10,t=30,b=10), title="<b>Starling Vector</b>",
                       xaxis=dict(title="Preload", gridcolor=THEME['grid']), yaxis=dict(title="SV", gridcolor=THEME['grid']), showlegend=False)
     return fig
 
@@ -174,7 +196,7 @@ def plot_oxygen_debt(df, curr_time):
     fig.add_trace(go.Scatter(x=data.index, y=data['DO2'], fill='tozeroy', fillcolor=hex_to_rgba(THEME['do2'],0.1), line=dict(color=THEME['do2']), name='DO2'), secondary_y=False)
     fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], line=dict(color='red', width=2), name='Lac'), secondary_y=True)
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>O2 Supply/Demand</b>", showlegend=False)
+                      height=250, margin=dict(l=10,r=10,t=30,b=10), title="<b>O2 Supply/Demand</b>", showlegend=False)
     return fig
 
 def plot_renal_cliff(df, curr_time):
@@ -183,27 +205,6 @@ def plot_renal_cliff(df, curr_time):
     fig.add_shape(type="rect", x0=30, y0=0, x1=65, y1=0.5, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
     fig.add_trace(go.Scatter(x=data['MAP'], y=data['Urine'], mode='lines+markers', marker=dict(color=np.linspace(0,1,len(data)), colorscale='Reds'), line=dict(color='#555')))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Renal Autoregulation</b>",
+                      height=250, margin=dict(l=10,r=10,t=30,b=10), title="<b>Renal Autoregulation</b>",
                       xaxis=dict(title="MAP", gridcolor=THEME['grid']), yaxis=dict(title="Urine", gridcolor=THEME['grid']), showlegend=False)
-    return fig
-
-def plot_spectrum(df, curr_time):
-    data = df['HR'].iloc[max(0, curr_time-64):curr_time].values
-    if len(data) < 64: return go.Figure()
-    f, Pxx = welch(data, fs=1/60)
-    fig = go.Figure(go.Scatter(x=f, y=Pxx, fill='tozeroy', line=dict(color=THEME['svr'])))
-    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=0,r=0,t=20,b=0), title="<b>Autonomic PSD</b>",
-                      xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=False))
-    return fig
-
-def plot_pca_space(df, curr_time):
-    data = df.iloc[max(0, curr_time-200):curr_time]
-    fig = go.Figure()
-    fig.add_shape(type="circle", x0=-2, y0=-2, x1=2, y1=2, line_color=THEME['ci'])
-    fig.add_trace(go.Scatter(x=data['PC1'], y=data['PC2'], mode='lines', line=dict(color='white', width=1), opacity=0.5))
-    fig.add_trace(go.Scatter(x=[data['PC1'].iloc[-1]], y=[data['PC2'].iloc[-1]], mode='markers', marker=dict(color='red', size=8)))
-    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=0,r=0,t=30,b=0), title="<b>Global State (PCA)</b>",
-                      xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
     return fig
