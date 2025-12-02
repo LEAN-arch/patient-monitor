@@ -1,265 +1,209 @@
 import numpy as np
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
-from statsmodels.tsa.api import VAR
-import math
+from plotly.subplots import make_subplots
+import scipy.stats as stats
 
-# --- 1. Simulation (Physiologically Realistic) ---
-def simulate_patient(mins_total=720, seed=42):
+# --- 1. Robust Physiological Simulation ---
+def simulate_patient(mins_total=720):
     """
-    Simulates a patient progressing from stable -> respiratory distress -> decompensated shock.
+    Simulates a patient transitioning from stable -> compensatory shock -> decompensated shock.
     """
-    np.random.seed(seed)
+    t = np.arange(mins_total)
     
-    # 1. Define Baseline (Stable Patient)
-    # HR, SBP, SpO2, RR, PI
-    means = np.array([75., 120., 98., 16., 3.5])
-    stds  = np.array([3.,  5.,   0.5, 1.0, 0.5])
-    
-    # Physiological correlations
-    corr = np.array([
-        [ 1.0, -0.2, -0.1,  0.5, -0.2], # HR
-        [-0.2,  1.0,  0.1, -0.1,  0.4], # SBP
-        [-0.1,  0.1,  1.0, -0.2, -0.1], # SpO2
-        [ 0.5, -0.1, -0.2,  1.0, -0.2], # RR
-        [-0.2,  0.4, -0.1, -0.2,  1.0]  # PI
-    ])
-    cov = np.outer(stds, stds) * corr
-    
-    # 2. Generate VAR(1) Baseline
-    phi = 0.7 
-    data = np.zeros((mins_total, 5))
-    data[0] = means
-    
-    noise_cov = cov * (1 - phi**2)
-    
-    for t in range(1, mins_total):
-        noise = np.random.multivariate_normal(np.zeros(5), noise_cov)
-        data[t] = means + phi * (data[t-1] - means) + noise
+    # Base Vitals (Stable)
+    hr = np.random.normal(75, 2, mins_total)
+    sbp = np.random.normal(120, 3, mins_total)
+    spo2 = np.random.normal(98, 0.5, mins_total)
+    rr = np.random.normal(16, 1, mins_total)
+    pi = np.random.normal(3.5, 0.2, mins_total) # Perfusion Index
 
-    df = pd.DataFrame(data, columns=['HR','SBP','SpO2','RR','PI'])
+    # SHOCK EVENT starts at min 400
+    # Phase 1: Compensation (400-550): HR UP, SBP Stable/Slight Up, PI DOWN (vasoconstriction)
+    # Phase 2: Decompensation (550+): HR High, SBP CRASHES, SpO2 Drops
     
-    # 3. Inject Clinical Events
+    shock_start = 400
+    decomp_start = 550
     
-    # Event A: Transient Hypoxia (Mucus Plug / Position change) at min 180
-    # SpO2 drops sharply, HR rises to compensate, then resolves
-    t_event = 180
-    df.loc[t_event:t_event+20, 'SpO2'] -= 8.0 
-    df.loc[t_event:t_event+20, 'HR'] += 15.0
+    # HR Trend
+    hr[shock_start:] += np.linspace(0, 40, mins_total-shock_start) + np.random.normal(0, 1, mins_total-shock_start)
     
-    # Event B: Decompensated Shock starting at min 420
-    t_shock = 420
-    for t in range(t_shock, mins_total):
-        # Non-linear progression (gets worse faster)
-        progress = ((t - t_shock) / (mins_total - t_shock)) ** 1.5
-        
-        # Clinical Pattern: Shock
-        # 1. HR rises (Compensatory Tachycardia)
-        df.at[t, 'HR']   += 50.0 * progress
-        # 2. SBP drops (Hypotension - late sign)
-        df.at[t, 'SBP']  -= 40.0 * progress
-        # 3. RR rises (Metabolic Acidosis compensation)
-        df.at[t, 'RR']   += 14.0 * progress
-        # 4. PI drops (Peripheral vasoconstriction - early sign)
-        df.at[t, 'PI']   -= 3.0 * progress
-        # 5. SpO2 drops eventually
-        df.at[t, 'SpO2'] -= 6.0 * progress
-        
-        # Add stress noise (variability increases in instability)
-        df.iloc[t] += np.random.normal(0, 1.0 * progress, 5)
+    # SBP Trend (Maintained then crashes)
+    sbp[decomp_start:] -= np.linspace(0, 40, mins_total-decomp_start)
+    
+    # PI Trend (Early indicator!)
+    pi[shock_start:] = np.maximum(0.1, pi[shock_start:] - np.linspace(0, 3.0, mins_total-shock_start))
+    
+    # RR Trend (Compensating for acidosis)
+    rr[shock_start:] += np.linspace(0, 12, mins_total-shock_start)
 
-    # Clamps
-    df['SpO2'] = df['SpO2'].clip(0, 100)
-    df['SBP'] = df['SBP'].clip(40, 250)
-    df['PI'] = df['PI'].clip(0.1, 20)
-    
+    # SpO2 (Late sign)
+    spo2[decomp_start:] = np.maximum(80, spo2[decomp_start:] - np.linspace(0, 10, mins_total-decomp_start))
+
+    df = pd.DataFrame({'HR': hr, 'SBP': sbp, 'SpO2': spo2, 'RR': rr, 'PI': pi}, index=t)
     return df
 
-# --- 2. Analytics ---
-
-def fit_var_and_residuals_full(df_full, baseline_window=120):
-    """ Fits VAR on stable baseline, predicts residuals for full history. """
-    train_data = df_full.iloc[:baseline_window]
-    model = VAR(train_data)
-    try:
-        results = model.fit(maxlags=1)
-        lag = results.k_ar
-        
-        c = results.params[0, :]
-        A = results.params[1:, :]
-        
-        data_val = df_full.values
-        residuals = np.zeros_like(data_val)
-        
-        for t in range(lag, len(data_val)):
-            pred = c + np.dot(data_val[t-1], A)
-            residuals[t] = data_val[t] - pred
-            
-        cov_est = np.cov(residuals[lag:baseline_window].T)
-        return residuals, cov_est, lag
-        
-    except Exception:
-        return (df_full - df_full.mean()).values, np.eye(5), 0
-
-def compute_mahalanobis_risk(residuals, cov_est, lam=0.15):
-    """ Computes Mahalanobis Distance + EWMA Smoothing. """
-    try:
-        inv_cov = np.linalg.pinv(cov_est + 1e-6 * np.eye(cov_est.shape[0]))
-    except:
-        inv_cov = np.eye(cov_est.shape[0])
-        
-    D2 = np.sum((residuals @ inv_cov) * residuals, axis=1)
-    
-    # EWMA Smoothing
-    z = np.zeros_like(D2)
-    z[0] = D2[0]
-    for t in range(1, len(D2)):
-        z[t] = lam * D2[t] + (1 - lam) * z[t-1]
-        
-    return z, inv_cov
-
-# --- 3. Enhanced Visualization (Clinical Focus) ---
-
-def plot_vitals(df_view, t_axis):
-    """ Plots HR/SBP/SpO2 with clear reference cues. """
-    fig = go.Figure()
-    
-    # Highlight "Normal" HR Range (60-100)
-    fig.add_shape(type="rect",
-        x0=t_axis[0], x1=t_axis[-1], y0=60, y1=100,
-        fillcolor="green", opacity=0.05, layer="below", line_width=0,
-    )
-
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['HR'], name='HR (bpm)', line=dict(color='#d62728', width=2.5)))
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SBP'], name='SBP (mmHg)', line=dict(color='#1f77b4', width=2)))
-    fig.add_trace(go.Scatter(x=t_axis, y=df_view['SpO2'], name='SpO2 (%)', yaxis='y2', line=dict(color='#2ca02c', width=2, dash='dot')))
-    
-    fig.update_layout(
-        height=380,
-        margin=dict(l=10, r=10, t=30, b=10),
-        legend=dict(orientation="h", y=1.1, x=0),
-        yaxis=dict(title="Hemodynamics", range=[40, 180], showgrid=True, gridcolor='lightgrey'),
-        yaxis2=dict(title="SpO2", overlaying='y', side='right', range=[80, 101], showgrid=False),
-        plot_bgcolor='white',
-        hovermode="x unified"
-    )
-    return fig
-
-def plot_risk_enhanced(risk_scores, t_axis):
-    """ Risk plot with colored semantic zones (Safe/Warning/Critical). """
-    fig = go.Figure()
-    
-    # Define semantic zones
-    max_val = max(50, np.max(risk_scores) * 1.1)
-    
-    # Green Zone (Stable)
-    fig.add_hrect(y0=0, y1=15, fillcolor="green", opacity=0.1, layer="below", line_width=0, annotation_text="STABLE", annotation_position="top left")
-    # Yellow Zone (Warning)
-    fig.add_hrect(y0=15, y1=30, fillcolor="orange", opacity=0.1, layer="below", line_width=0, annotation_text="WARNING", annotation_position="top left")
-    # Red Zone (Critical)
-    fig.add_hrect(y0=30, y1=max_val, fillcolor="red", opacity=0.1, layer="below", line_width=0, annotation_text="CRITICAL", annotation_position="top left")
-
-    fig.add_trace(go.Scatter(x=t_axis, y=risk_scores, mode='lines', name='Risk Index', line=dict(color='black', width=2)))
-    
-    fig.update_layout(
-        height=250,
-        title="<b>Integrated Physiological Instability Score</b>",
-        margin=dict(l=10, r=10, t=40, b=10),
-        yaxis=dict(title="Deviation Magnitude", range=[0, max_val]),
-        showlegend=False,
-        plot_bgcolor='white'
-    )
-    return fig
-
-def plot_pca_clinical(df_full, curr_time, baseline_window=120):
-    """ 
-    PCA fitted ONLY on baseline. 
-    This makes (0,0) the 'Safe Zone'. Deviation from center = Clinical Instability.
+# --- 2. Analytics Helper ---
+def fit_var_and_residuals_full(df, baseline_window=120):
     """
-    if len(df_full) < 2: return go.Figure()
+    Calculates Z-score deviations based on the first 2 hours (baseline).
+    """
+    baseline = df.iloc[:baseline_window]
+    means = baseline.mean()
+    stds = baseline.std()
     
-    # 1. Fit Scaler & PCA on BASELINE ONLY (The "Stable" definition)
-    baseline_data = df_full.iloc[:baseline_window]
-    scaler = StandardScaler().fit(baseline_data)
-    pca = PCA(n_components=2).fit(scaler.transform(baseline_data))
+    # Avoid division by zero
+    stds[stds == 0] = 1
     
-    # 2. Transform the FULL trajectory
-    X_scaled = scaler.transform(df_full.iloc[:curr_time])
-    coords = pca.transform(X_scaled)
+    # Calculate Z-scores (Standardized Residuals)
+    z_scores = (df - means) / stds
     
-    # 3. Plot
-    fig = go.Figure()
+    # Covariance of the baseline Z-scores
+    cov_matrix = z_scores.iloc[:baseline_window].cov()
     
-    # Draw "Safe Zone" (Circle at 0,0)
-    fig.add_shape(type="circle",
-        xref="x", yref="y", x0=-2, y0=-2, x1=2, y1=2,
-        line_color="green", fillcolor="green", opacity=0.1, line_dash="dot"
-    )
-    fig.add_annotation(x=0, y=0, text="Safe Baseline", showarrow=False, font=dict(color="green"))
+    return z_scores, cov_matrix
 
-    # Draw Trajectory
-    # Color by time (fading) to show direction
-    colors = np.arange(len(coords))
+def compute_mahalanobis_risk(z_scores, cov_matrix):
+    """
+    Computes Mahalanobis Distance (Global Instability Score).
+    """
+    inv_cov = np.linalg.pinv(cov_matrix.values)
+    values = z_scores.values
     
-    fig.add_trace(go.Scatter(
-        x=coords[:,0], y=coords[:,1],
-        mode='markers+lines',
-        marker=dict(
-            size=5, 
-            color=colors, 
-            colorscale='Turbo', 
-            colorbar=dict(title="Time (min)")
-        ),
-        line=dict(color='gray', width=0.5),
-        name='Patient State'
-    ))
+    # MD = sqrt( (x-u)T * inv_cov * (x-u) )
+    # Since we z-scored, u=0.
     
-    # Highlight Current State
-    fig.add_trace(go.Scatter(
-        x=[coords[-1,0]], y=[coords[-1,1]],
-        mode='markers+text',
-        marker=dict(size=15, color='red', symbol='x'),
-        text=["CURRENT"], textposition="top center",
-        name='Current'
-    ))
+    md_sq = [np.dot(np.dot(row, inv_cov), row.T) for row in values]
+    risk = np.sqrt(md_sq)
+    
+    return risk, inv_cov
 
-    fig.update_layout(
-        height=400,
-        title="<b>Hemodynamic State Space</b><br><i>(Distance from center = Instability)</i>",
-        xaxis=dict(title="Principal Component 1", showgrid=True),
-        yaxis=dict(title="Principal Component 2", showgrid=True),
-        margin=dict(l=10, r=10, t=50, b=10),
-        plot_bgcolor='white'
-    )
+# --- 3. Clinical Visualizations ---
+
+def plot_combined_vitals(df, t_axis, shock_index):
+    """
+    Plots vitals aligned with the Shock Index to show hemodynamic coupling.
+    """
+    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
+                        vertical_spacing=0.05,
+                        row_heights=[0.4, 0.3, 0.3],
+                        specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]])
+
+    # Row 1: Hemodynamics (HR vs SBP)
+    fig.add_trace(go.Scatter(x=t_axis, y=df['HR'], name="HR", line=dict(color='#ff4b4b', width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=t_axis, y=df['SBP'], name="SBP", line=dict(color='#636efa', width=2)), row=1, col=1, secondary_y=True)
+    
+    # Row 2: Shock Index (The Actionable Metric)
+    # SI > 0.9 is dangerous
+    fig.add_trace(go.Scatter(x=t_axis, y=shock_index, name="Shock Index", 
+                             fill='tozeroy', line=dict(color='#ffa15a', width=1)), row=2, col=1)
+    fig.add_hline(y=0.9, line_dash="dot", line_color="red", annotation_text="Critical Threshold (>0.9)", row=2, col=1)
+
+    # Row 3: Perfusion (Early Warning)
+    fig.add_trace(go.Scatter(x=t_axis, y=df['PI'], name="Perfusion Index", line=dict(color='#00cc96', width=2)), row=3, col=1)
+
+    fig.update_layout(height=500, margin=dict(l=10, r=10, t=30, b=10), template="plotly_dark", title_text="Hemodynamic Profile & Shock Index")
+    fig.update_yaxes(title_text="HR (bpm)", row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="SBP (mmHg)", row=1, col=1, secondary_y=True)
+    fig.update_yaxes(title_text="Shock Index", row=2, col=1)
+    fig.update_yaxes(title_text="PI %", row=3, col=1)
+    
     return fig
 
-def plot_deviation_matrix(residuals, vars_list):
-    """ Heatmap showing Directionality of deviation (Red=High, Blue=Low). """
-    if len(residuals) < 2: return go.Figure()
-
-    # Standardize residuals (Z-score)
-    scaler = StandardScaler()
-    res_norm = scaler.fit_transform(residuals)
-    
-    # Clip for readability (-4 to +4 sigma)
-    res_norm = np.clip(res_norm, -4, 4)
+def plot_temporal_contribution(z_scores_view, vars_list):
+    """
+    Heatmap showing WHICH variable is driving the instability over time.
+    Red = High Deviation, Blue = Low Deviation (relative to baseline).
+    """
+    z_clipped = z_scores_view.clip(-4, 4) # Clip for color scaling
     
     fig = go.Figure(data=go.Heatmap(
-        z=res_norm.T,
-        x=np.arange(len(res_norm)),
+        z=z_clipped.T,
+        x=z_scores_view.index,
         y=vars_list,
-        colorscale='RdBu_r', # Red = High, Blue = Low
+        colorscale='RdBu_r', # Red=High, Blue=Low
         zmid=0,
-        colorbar=dict(title="Std Dev<br>Deviation")
+        colorbar=dict(title="Z-Score Dev")
     ))
     
     fig.update_layout(
-        height=300, 
-        title="<b>Clinical Deviation Matrix</b><br><i>(Red = Unexpectedly High, Blue = Unexpectedly Low)</i>",
-        margin=dict(l=10, r=10, t=50, b=10),
-        plot_bgcolor='white'
+        title="Anatomy of Instability (Deviation Heatmap)",
+        height=300,
+        margin=dict(l=10, r=10, t=30, b=10),
+        template="plotly_dark"
     )
+    return fig
+
+def plot_clinical_radar(current_row, baseline_means):
+    """
+    Radar chart mapping the current state to clinical axes.
+    We normalize everything so that 'Center' is baseline and 'Edge' is critical.
+    """
+    categories = ['Tachycardia (HR)', 'Hypotension (Inv SBP)', 'Hypoperfusion (Inv PI)', 'Desaturation (Inv SpO2)', 'Tachypnea (RR)']
+    
+    # Normalize values for visual impact (Arbitrary scaling for demo)
+    # Higher value on chart = WORSE clinical state
+    val_hr = max(0, (current_row['HR'] - 60) / 100) 
+    val_sbp = max(0, (140 - current_row['SBP']) / 100) # Inverted: Lower BP = Higher Risk
+    val_pi = max(0, (4.0 - current_row['PI']) / 4.0)   # Inverted: Lower PI = Higher Risk
+    val_spo2 = max(0, (100 - current_row['SpO2']) / 20) # Inverted
+    val_rr = max(0, (current_row['RR'] - 12) / 30)
+
+    values = [val_hr, val_sbp, val_pi, val_spo2, val_rr]
+    values += [values[0]] # Close the loop
+    categories += [categories[0]]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=values,
+        theta=categories,
+        fill='toself',
+        name='Current State',
+        line_color='#ef553b'
+    ))
+    
+    # Add a "Stable Zone" circle
+    fig.add_trace(go.Scatterpolar(
+        r=[0.2]*6,
+        theta=categories,
+        line_color='green',
+        line_dash='dot',
+        hoverinfo='skip',
+        name='Stable Limit'
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(visible=True, range=[0, 1]),
+        ),
+        showlegend=False,
+        title="Physiological Footprint",
+        height=350,
+        margin=dict(l=40, r=40, t=40, b=20),
+        template="plotly_dark"
+    )
+    return fig
+
+def plot_risk_gauge(current_risk):
+    fig = go.Figure(go.Indicator(
+        mode = "gauge+number",
+        value = current_risk,
+        domain = {'x': [0, 1], 'y': [0, 1]},
+        title = {'text': "Multivariate Instability Score"},
+        gauge = {
+            'axis': {'range': [None, 50], 'tickwidth': 1, 'tickcolor': "white"},
+            'bar': {'color': "white", 'thickness': 0.2},
+            'steps': [
+                {'range': [0, 15], 'color': "#00cc96"}, # Stable
+                {'range': [15, 25], 'color': "#ffa15a"}, # Warning
+                {'range': [25, 50], 'color': "#ef553b"}  # Critical
+            ],
+            'threshold': {
+                'line': {'color': "red", 'width': 4},
+                'thickness': 0.75,
+                'value': 25
+            }
+        }
+    ))
+    fig.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20), template="plotly_dark")
     return fig
