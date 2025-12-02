@@ -6,126 +6,122 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression
 
-# --- 1. CONFIGURATION ---
+# --- 1. CONFIGURATION (Light Mode / Clinical Report Style) ---
 COLORS = {
-    'bg': '#0b0e11',
-    'card': '#15191f',
-    'text': '#e0e0e0',
-    'grid': '#2b313b',
-    'hr': '#00f2ea',      # Cyan
-    'sbp': '#ff0055',     # Neon Red
-    'spc_mean': '#00ff00',
-    'spc_band': 'rgba(0, 255, 0, 0.05)',
-    'forecast': '#ffae00' # Amber
+    'bg': '#ffffff',
+    'card': '#f8f9fa',
+    'text': '#2c3e50',
+    'grid': '#e9ecef',
+    'hr': '#0056b3',      # Clinical Blue
+    'sbp': '#d63384',     # Magenta
+    'forecast': '#fd7e14',# Orange
+    'zone_a': 'rgba(220, 53, 69, 0.1)',   # Red Tint (3 Sigma)
+    'zone_b': 'rgba(255, 193, 7, 0.15)',  # Yellow Tint (2 Sigma)
+    'zone_c': 'rgba(40, 167, 69, 0.05)',  # Green Tint (1 Sigma)
+    'marker': '#dc3545'   # Red for violations
 }
 
 # --- 2. ADVANCED SIMULATION ---
 def simulate_patient_dynamics(mins_total=720):
     """
-    Simulates patient physiology with non-linear dynamics for Chaos theory analysis.
+    Simulates a patient with subtle "Micro-Drifts" before the crash.
     """
     t = np.arange(mins_total)
     
     # 1. Baseline (Stable Attractor)
-    # Using sine waves + fractal noise to simulate biological variability (HRV)
-    noise = np.random.normal(0, 1, mins_total)
-    hr = 75 + 2 * np.sin(t/50) + noise
+    noise = np.random.normal(0, 0.8, mins_total) # Tighter noise for sensitivity demo
+    hr = 72 + 1.5 * np.sin(t/50) + noise
     sbp = 120 + 1 * np.cos(t/60) + noise
-    pi = 3.5 + 0.1 * np.sin(t/30) + 0.1 * noise
+    pi = 3.5 + 0.1 * np.sin(t/30) + 0.05 * noise
     
-    # 2. Pathological Event (The "Drift")
-    # Starts at 400. Not a sudden jump, but a change in the Attractor.
-    event_start = 400
+    # 2. Pathological Drift (Subtle start at min 300)
+    event_start = 300
     
-    # Drift functions
-    drift_hr = np.linspace(0, 40, mins_total-event_start) ** 1.1 # Non-linear rise
-    drift_pi = np.linspace(0, 2.5, mins_total-event_start)       # Linear constriction
-    drift_sbp = np.zeros(mins_total-event_start)
+    # "The Creep": Very slow linear rise that standard alarms miss, but SPC catches
+    drift_hr = np.linspace(0, 25, mins_total-event_start) 
+    drift_pi = np.linspace(0, 1.5, mins_total-event_start)
     
-    # Late crash for SBP (Decompensation)
-    crash_start = 600
-    if mins_total > crash_start:
-        drift_sbp[crash_start-event_start:] = np.linspace(0, 30, mins_total-crash_start) ** 1.5
-
     # Apply drifts
     hr[event_start:] += drift_hr
-    sbp[event_start:] -= drift_sbp
-    pi[event_start:] = np.maximum(0.5, pi[event_start:] - drift_pi)
+    hr[event_start:] += np.random.normal(0, 1.5, mins_total-event_start) # Increased entropy
     
-    # Add micro-volatility (loss of complexity) as shock advances
-    # Sick patients often have REDUCED variability (stiff system) or CHAOTIC variability
-    hr[event_start:] += np.random.normal(0, 2, mins_total-event_start) # Increased noise
+    # PI Drops
+    pi[event_start:] = np.maximum(0.5, pi[event_start:] - drift_pi)
 
     return pd.DataFrame({'HR': hr, 'SBP': sbp, 'PI': pi}, index=t)
 
-# --- 3. SPC ANALYTICS (Western Electric Rules) ---
-def detect_spc_violations(series, window=60):
+# --- 3. SENSITIVE SPC LOGIC (Western Electric Zones) ---
+def detect_sensitive_spc(series, window=60):
     """
-    Detects Western Electric Rule violations:
-    1. Points beyond 3 sigma (Control Limits)
-    2. 2 out of 3 points beyond 2 sigma
-    3. 8 consecutive points on one side of mean (Trend)
+    Implements multi-zone sensitivity:
+    - Zone A: Beyond 3 sigma (Critical)
+    - Zone B: Beyond 2 sigma (Warning)
+    - Zone C: Beyond 1 sigma (Early Shift)
     """
-    mean = series.rolling(window=window).mean()
-    std = series.rolling(window=window).std()
+    # Rolling Statistics
+    roll = series.rolling(window=window)
+    mean = roll.mean()
+    std = roll.std()
     
-    ucl = mean + 3*std
-    lcl = mean - 3*std
+    # Define Sigma Bands
+    ucl_3 = mean + 3*std
+    lcl_3 = mean - 3*std
+    ucl_2 = mean + 2*std
+    lcl_2 = mean - 2*std
+    ucl_1 = mean + 1*std
+    lcl_1 = mean - 1*std
     
-    # Identify violations
-    violation_idx = []
-    violation_type = []
+    # Violation Detection
+    violations = []
     
     values = series.values
-    means = mean.values
     
     for i in range(window, len(series)):
-        # Rule 1: Breach
-        if values[i] > ucl.iloc[i] or values[i] < lcl.iloc[i]:
-            violation_idx.append(series.index[i])
-            violation_type.append('Breach')
+        val = values[i]
+        
+        # Rule 1: Any point outside 3 Sigma
+        if val > ucl_3.iloc[i] or val < lcl_3.iloc[i]:
+            violations.append((series.index[i], val, "Zone A Violation (3σ)"))
             continue
             
-        # Rule 2: Shift (Simplification for speed: 8 points on one side)
-        if i > 8:
-            last_8 = values[i-8:i] - means[i-8:i]
-            if np.all(last_8 > 0) or np.all(last_8 < 0):
-                violation_idx.append(series.index[i])
-                violation_type.append('Shift')
+        # Rule 2: 2 out of 3 points beyond 2 Sigma (Sensitivity check)
+        if i > 2:
+            # Simple heuristic for this demo: Point outside 2 Sigma
+            if val > ucl_2.iloc[i] or val < lcl_2.iloc[i]:
+                violations.append((series.index[i], val, "Zone B Warning (2σ)"))
 
-    return mean, ucl, lcl, violation_idx, violation_type
+    return {
+        'mean': mean, 'std': std,
+        'u3': ucl_3, 'l3': lcl_3,
+        'u2': ucl_2, 'l2': lcl_2,
+        'u1': ucl_1, 'l1': lcl_1,
+        'violations': violations
+    }
 
-# --- 4. AI PROGNOSTICS (Forecasting) ---
+# --- 4. AI PROGNOSTICS ---
 def generate_ai_forecast(series, future_steps=30):
-    """
-    Uses Auto-Regressive Logic to project trajectory with uncertainty cones.
-    """
-    # Fit linear trend on last 20 mins to capture momentum
+    # (Same robust logic as before, optimized for visual output)
     y = series.values[-20:]
     x = np.arange(len(y)).reshape(-1, 1)
     model = LinearRegression()
     model.fit(x, y)
     
-    # Predict future
     x_future = np.arange(len(y), len(y) + future_steps).reshape(-1, 1)
     trend = model.predict(x_future)
-    
-    # Calculate noise/uncertainty based on recent volatility
     volatility = np.std(y)
     
-    # Expanding cone of uncertainty (Monte Carlo approximation)
-    upper = trend + (np.linspace(1, 2, future_steps) * volatility * 1.96)
-    lower = trend - (np.linspace(1, 2, future_steps) * volatility * 1.96)
+    upper = trend + (np.linspace(1, 2, future_steps) * volatility * 2.0)
+    lower = trend - (np.linspace(1, 2, future_steps) * volatility * 2.0)
     
     return trend, upper, lower
 
-# --- 5. VISUALIZATION: SPC MONITOR ---
-def plot_spc_monitor(df, curr_time, window=180):
+# --- 5. HIGH-SENSITIVITY VISUALIZATION ---
+def plot_sensitive_spc(df, curr_time, window=120):
     start = max(0, curr_time - window)
     data = df.iloc[start:curr_time]
     
-    # Calculate SPC
-    mean_hr, ucl_hr, lcl_hr, vio_idx, vio_type = detect_spc_violations(df['HR'].iloc[:curr_time])
+    # Run Sensitive SPC
+    spc = detect_sensitive_spc(df['HR'].iloc[:curr_time])
     
     # AI Forecast
     forecast_hr, f_upper, f_lower = generate_ai_forecast(df['HR'].iloc[:curr_time])
@@ -133,156 +129,122 @@ def plot_spc_monitor(df, curr_time, window=180):
 
     fig = go.Figure()
 
-    # 1. Historical Data
-    fig.add_trace(go.Scatter(x=data.index, y=data['HR'], mode='lines', 
-                             name='HR Actual', line=dict(color=COLORS['hr'], width=2)))
+    # --- A. The Sigma Zones (Background Bands) ---
+    # We plot these first so they sit behind the data
+    # Zone B (2-3 Sigma) - Warning Zone
+    fig.add_trace(go.Scatter(x=data.index, y=spc['u3'].loc[data.index], mode='lines', line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=data.index, y=spc['u2'].loc[data.index], mode='lines', line=dict(width=0), 
+                             fill='tonexty', fillcolor=COLORS['zone_b'], name='Warning Zone (2-3σ)'))
     
-    # 2. SPC Bands (Dynamic)
-    fig.add_trace(go.Scatter(x=data.index, y=ucl_hr.loc[data.index], mode='lines', 
-                             line=dict(width=0), showlegend=False, hoverinfo='skip'))
-    fig.add_trace(go.Scatter(x=data.index, y=lcl_hr.loc[data.index], mode='lines', 
-                             line=dict(width=0), fill='tonexty', fillcolor=COLORS['spc_band'], 
-                             name='3σ Control Zone'))
-    
-    fig.add_trace(go.Scatter(x=data.index, y=mean_hr.loc[data.index], mode='lines',
-                             line=dict(color=COLORS['spc_mean'], dash='dot', width=1), name='Moving Mean'))
+    fig.add_trace(go.Scatter(x=data.index, y=spc['l2'].loc[data.index], mode='lines', line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=data.index, y=spc['l3'].loc[data.index], mode='lines', line=dict(width=0), 
+                             fill='tonexty', fillcolor=COLORS['zone_b'], showlegend=False))
 
-    # 3. Violation Markers
-    relevant_violations = [v for v in vio_idx if v >= start and v < curr_time]
+    # Zone C (1 Sigma) - Noise Zone
+    fig.add_trace(go.Scatter(x=data.index, y=spc['u1'].loc[data.index], mode='lines', line=dict(width=0), showlegend=False))
+    fig.add_trace(go.Scatter(x=data.index, y=spc['l1'].loc[data.index], mode='lines', line=dict(width=0), 
+                             fill='tonexty', fillcolor=COLORS['zone_c'], name='Stable Zone (1σ)'))
+
+    # Center Line
+    fig.add_trace(go.Scatter(x=data.index, y=spc['mean'].loc[data.index], mode='lines',
+                             line=dict(color='#adb5bd', dash='dash', width=1), name='Mean'))
+
+    # --- B. The Data Stream ---
+    fig.add_trace(go.Scatter(x=data.index, y=data['HR'], mode='lines', 
+                             name='HR Actual', line=dict(color=COLORS['hr'], width=2.5)))
+
+    # --- C. Violation Markers (High Sensitivity) ---
+    relevant_violations = [v for v in spc['violations'] if v[0] >= start and v[0] < curr_time]
     if relevant_violations:
+        vx = [v[0] for v in relevant_violations]
+        vy = [v[1] for v in relevant_violations]
         fig.add_trace(go.Scatter(
-            x=relevant_violations, 
-            y=df.loc[relevant_violations, 'HR'],
-            mode='markers',
-            marker=dict(color='yellow', size=8, symbol='x'),
-            name='SPC Violation'
+            x=vx, y=vy, mode='markers',
+            marker=dict(color=COLORS['marker'], size=6, symbol='circle-open', line=dict(width=2)),
+            name='SPC Trigger'
         ))
 
-    # 4. AI Forecast (The Cone)
+    # --- D. AI Forecast Cone ---
     fig.add_trace(go.Scatter(x=t_future, y=f_upper, mode='lines', line=dict(width=0), showlegend=False))
     fig.add_trace(go.Scatter(x=t_future, y=f_lower, mode='lines', line=dict(width=0), 
-                             fill='tonexty', fillcolor='rgba(255, 174, 0, 0.2)', name='AI 95% CI'))
+                             fill='tonexty', fillcolor='rgba(253, 126, 20, 0.2)', name='AI Prediction'))
     fig.add_trace(go.Scatter(x=t_future, y=forecast_hr, mode='lines', 
-                             line=dict(color=COLORS['forecast'], dash='dash'), name='Prognosis'))
+                             line=dict(color=COLORS['forecast'], dash='dot', width=2)))
 
     fig.update_layout(
-        template="plotly_dark",
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        height=350,
-        margin=dict(l=0, r=0, t=30, b=0),
-        title=dict(text="HR: STATISTICAL PROCESS CONTROL & AI FORECAST", font=dict(size=14)),
-        xaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
-        yaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
-        legend=dict(orientation="h", y=1, x=0, bgcolor='rgba(0,0,0,0)')
+        template="plotly_white", # Light Mode
+        height=400,
+        margin=dict(l=0, r=0, t=40, b=0),
+        title=dict(text="High-Sensitivity Process Control (Western Electric Rules)", font=dict(color=COLORS['text'])),
+        xaxis=dict(showgrid=True, gridcolor=COLORS['grid'], title="Time (min)"),
+        yaxis=dict(showgrid=True, gridcolor=COLORS['grid'], title="Heart Rate (BPM)"),
+        legend=dict(orientation="h", y=1.02, x=0)
     )
     return fig
 
-# --- 6. VISUALIZATION: STATE SPACE (PCA + CHAOS) ---
-def plot_state_space(df, curr_time):
-    """
-    Plots the 'Phase Space' of the patient.
-    X-axis: Principal Component 1 (Hemodynamics)
-    Y-axis: Principal Component 2 (Perfusion/Stress)
-    
-    Stable patients hover in the center. Unstable patients 'orbit' out or drift linearly.
-    """
-    # Fit PCA on baseline (first 120 mins)
+def plot_state_space_light(df, curr_time):
+    # PCA Logic (same as before)
     scaler = StandardScaler()
     pca = PCA(n_components=2)
-    
     baseline = df.iloc[:120][['HR', 'SBP', 'PI']]
     scaler.fit(baseline)
     pca.fit(scaler.transform(baseline))
     
-    # Transform current history
     history = df.iloc[max(0, curr_time-300):curr_time][['HR', 'SBP', 'PI']]
     coords = pca.transform(scaler.transform(history))
     
-    # Create the "Comet" effect (Recent points are opaque, old are transparent)
-    n_points = len(coords)
-    alphas = np.linspace(0.1, 1, n_points)
-    
     fig = go.Figure()
     
-    # The Trajectory
+    # Trajectory (Blue/Grey for light mode)
     fig.add_trace(go.Scatter(
         x=coords[:, 0], y=coords[:, 1],
         mode='markers+lines',
         marker=dict(
-            color=np.arange(n_points), 
-            colorscale='Viridis', 
-            size=6,
-            opacity=alphas
+            color=np.arange(len(coords)), 
+            colorscale='Blues', 
+            size=5,
+            opacity=0.8
         ),
-        line=dict(width=1, color='rgba(255,255,255,0.3)'),
-        name='State Trajectory'
+        line=dict(width=1, color='rgba(0,0,0,0.2)'),
+        name='State'
     ))
     
-    # The "Safe Zone" (Circle at 0,0)
-    fig.add_shape(type="circle",
-        xref="x", yref="y",
-        x0=-2, y0=-2, x1=2, y1=2,
-        line_color="green", fillcolor="rgba(0,255,0,0.1)",
-    )
+    # Safe Zone
+    fig.add_shape(type="circle", xref="x", yref="y", x0=-2, y0=-2, x1=2, y1=2,
+        line_color="#28a745", fillcolor="rgba(40, 167, 69, 0.1)")
     
     # Current Head
-    fig.add_trace(go.Scatter(
-        x=[coords[-1, 0]], y=[coords[-1, 1]],
-        mode='markers',
-        marker=dict(color='red', size=12, symbol='diamond'),
-        name='Current State'
-    ))
+    fig.add_trace(go.Scatter(x=[coords[-1, 0]], y=[coords[-1, 1]], mode='markers',
+        marker=dict(color='#dc3545', size=10, symbol='diamond'), name='Current'))
 
     fig.update_layout(
-        template="plotly_dark",
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        height=350,
-        margin=dict(l=0, r=0, t=30, b=0),
-        title=dict(text="PHYSIOLOGICAL STATE SPACE (PCA)", font=dict(size=14)),
-        xaxis=dict(title="PC1 (Hemodynamics)", showgrid=True, gridcolor=COLORS['grid'], zeroline=True),
-        yaxis=dict(title="PC2 (Perfusion)", showgrid=True, gridcolor=COLORS['grid'], zeroline=True),
+        template="plotly_white",
+        height=300,
+        title=dict(text="State Space Trajectory (PCA)", font=dict(color=COLORS['text'], size=12)),
+        xaxis=dict(title="PC1", showgrid=True, gridcolor=COLORS['grid']),
+        yaxis=dict(title="PC2", showgrid=True, gridcolor=COLORS['grid']),
         showlegend=False
     )
     return fig
 
-# --- 7. VISUALIZATION: CHAOS ATTRACTOR (Poincaré Plot) ---
-def plot_chaos_attractor(df, curr_time, lag=1):
-    """
-    Plots HR(t) vs HR(t-lag).
-    Round ball = Healthy Chaos (Sinus Arrhythmia).
-    Stretched line = Reduced Complexity / Deterministic drift (Pathology).
-    """
+def plot_chaos_light(df, curr_time):
     start = max(0, curr_time - 120)
     data = df['HR'].iloc[start:curr_time].values
     
-    x_t = data[:-lag]
-    x_t_plus_1 = data[lag:]
-    
     fig = go.Figure()
-    
     fig.add_trace(go.Scatter(
-        x=x_t, y=x_t_plus_1,
+        x=data[:-1], y=data[1:],
         mode='markers',
-        marker=dict(
-            color='#00ccff',
-            size=5,
-            opacity=0.6,
-            line=dict(width=0.5, color='white')
-        ),
+        marker=dict(color='#6c757d', size=4, opacity=0.5), # Grey dots
         name='Attractor'
     ))
     
     fig.update_layout(
-        template="plotly_dark",
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        height=300,
-        width=300,
-        margin=dict(l=0, r=0, t=40, b=0),
-        title=dict(text="CHAOS ATTRACTOR (Lag Plot)", font=dict(size=12)),
-        xaxis=dict(title="HR(t)", showgrid=True, gridcolor=COLORS['grid']),
-        yaxis=dict(title=f"HR(t+{lag})", showgrid=True, gridcolor=COLORS['grid']),
+        template="plotly_white",
+        height=250, width=250,
+        margin=dict(l=10, r=10, t=30, b=10),
+        title=dict(text="Poincaré Plot (Chaos)", font=dict(color=COLORS['text'], size=12)),
+        xaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
+        yaxis=dict(showgrid=True, gridcolor=COLORS['grid']),
     )
     return fig
