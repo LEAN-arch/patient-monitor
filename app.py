@@ -86,34 +86,44 @@ st.markdown("---")
 # --- ROW 1: PRIMARY VITALS (The "What") ---
 col1, col2, col3, col4 = st.columns(4)
 
-def vital_box(col, label, val, unit, delta, threshold, invert=False):
+def vital_box(col, label, val, unit, delta, threshold, invert=False, fmt="{:.0f}"):
+    """
+    Displays a vital sign card.
+    Args:
+        val (float/int): The raw numeric value (for logic check).
+        fmt (str): Format string for display (e.g., "{:.1f}").
+    """
+    # Logic Check (Using raw number)
     is_bad = val < threshold if not invert else val > threshold
+    
+    # Visual Formatting
     status = "status-crit" if is_bad else "status-ok"
     delta_color = "txt-crit" if is_bad else "txt-ok"
+    display_val = fmt.format(val)
     
     col.markdown(f"""
     <div class="vital-card {status}">
         <div class="vital-label">{label}</div>
-        <div class="vital-value">{val} <span class="vital-unit">{unit}</span></div>
+        <div class="vital-value">{display_val} <span class="vital-unit">{unit}</span></div>
         <div class="vital-delta {delta_color}">{delta}</div>
     </div>
     """, unsafe_allow_html=True)
 
 # 1. MAP (Perfusion)
 d_map = map_val - prev['MAP']
-vital_box(col1, "Mean Art. Pressure", f"{int(map_val)}", "mmHg", f"{d_map:+.0f}", 65)
+vital_box(col1, "Mean Art. Pressure", map_val, "mmHg", f"{d_map:+.0f}", 65, fmt="{:.0f}")
 
 # 2. Pulse Pressure (Stroke Volume)
 d_pp = pp - prev['PP']
-vital_box(col2, "Pulse Pressure", f"{int(pp)}", "mmHg", f"{d_pp:+.0f} (Narrowing)" if d_pp < -2 else "Stable", 30)
+vital_box(col2, "Pulse Pressure", pp, "mmHg", f"{d_pp:+.0f} (Narrowing)" if d_pp < -2 else "Stable", 30, fmt="{:.0f}")
 
 # 3. Shock Index (Stability)
 d_si = si - prev['SI']
-vital_box(col3, "Shock Index", f"{si:.2f}", "", f"{d_si:+.2f}", 0.9, invert=True)
+vital_box(col3, "Shock Index", si, "", f"{d_si:+.2f}", 0.9, invert=True, fmt="{:.2f}")
 
 # 4. Perfusion Index (Micro-circ)
 pi = current['PI']
-vital_box(col4, "Perfusion Index", f"{pi:.1f}", "%", "Vasoconstriction" if pi < 1.0 else "Normal", 1.0)
+vital_box(col4, "Perfusion Index", pi, "%", "Vasoconstriction" if pi < 1.0 else "Normal", 1.0, fmt="{:.1f}")
 
 
 # --- ROW 2: CLINICAL DECISION SUPPORT (The "Why" & "When") ---
@@ -133,4 +143,6 @@ with c_mid:
 
 with c_right:
     # 3. Early Warning
-    fig_auto = utils.plot_autonomic_str
+    fig_auto = utils.plot_autonomic_strip(df, curr_time)
+    st.plotly_chart(fig_auto, use_container_width=True)
+    st.caption("ℹ️ **Early Warning:** Drop in Entropy + PI indicates autonomic stress response *before* BP drops.")
