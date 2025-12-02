@@ -3,306 +3,266 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.signal import welch
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 
-# --- 1. THEME: GLASSMORPHIC CLINICAL ---
+# --- 1. THEME: DARK MATTER (Cyberpunk Medical) ---
 THEME = {
-    'bg': '#f8fafc',
-    'text': '#0f172a',
-    'grid': '#e2e8f0',
-    # Clinical Signals
-    'hr': '#0ea5e9',       # Cyan Blue
-    'map': '#d946ef',      # Fuschia
-    'ci': '#10b981',       # Emerald
-    'svr': '#f59e0b',      # Amber
-    'do2': '#6366f1',      # Indigo
-    # Predictive
-    'pred_natural': '#94a3b8', # Grey (Natural course)
-    'pred_interv': '#10b981',  # Green (With Intervention)
+    'bg': '#050505',
+    'card': 'rgba(20, 25, 35, 0.7)',
+    'grid': '#1f2937',
+    'text': '#e2e8f0',
+    # Signals
+    'hr': '#00f2ea',       # Cyan (Electrical)
+    'map': '#ff0055',      # Neon Red (Pressure)
+    'ci': '#00ff9f',       # Neon Green (Flow)
+    'svr': '#ffaa00',      # Neon Amber (Resistance)
+    'do2': '#b026ff',      # Neon Purple (Metabolic)
+    'pca': '#ffffff',      # White (Global State)
     # Zones
-    'zone_safe': 'rgba(16, 185, 129, 0.08)',
-    'zone_warn': 'rgba(245, 158, 11, 0.08)',
-    'zone_crit': 'rgba(239, 68, 68, 0.08)'
+    'zone_ok': 'rgba(0, 255, 159, 0.1)',
+    'zone_warn': 'rgba(255, 170, 0, 0.1)',
+    'zone_crit': 'rgba(255, 0, 85, 0.1)'
 }
 
-# --- 2. ADVANCED PHYSICS ENGINE (DIGITAL TWIN) ---
+# --- 2. PHYSICS ENGINE (DIGITAL TWIN) ---
 class DigitalTwin:
-    """
-    A 0-D Cardiovascular System Model.
-    Simulates the interaction between:
-    - Preload (Volume)
-    - Contractility (Pump)
-    - Afterload (Resistance)
-    - Compliance (Stiffness)
-    """
     def __init__(self):
-        self.preload = 12.0  # CVP proxy (mmHg)
-        self.contractility = 1.0 # Emax multiplier
-        self.afterload = 1.0 # SVR multiplier
-        self.compliance = 1.0 # Arterial compliance
+        self.preload = 12.0
+        self.contractility = 1.0
+        self.afterload = 1.0
         
     def step(self, sepsis_severity=0.0):
-        """
-        Calculates one hemodynamic state based on current parameters.
-        sepsis_severity: 0.0 (Healthy) to 1.0 (Refractory Shock)
-        """
-        # Pathology: Sepsis causes Vasodilation (Low SVR) and Capillary Leak (Low Preload)
-        effective_afterload = self.afterload * (1.0 - (sepsis_severity * 0.6))
-        effective_preload = self.preload * (1.0 - (sepsis_severity * 0.3))
+        # Pathology: Vasodilation + Capillary Leak
+        eff_afterload = self.afterload * (1.0 - (sepsis_severity * 0.7))
+        eff_preload = self.preload * (1.0 - (sepsis_severity * 0.4))
         
-        # 1. Frank-Starling Mechanism (Sigmoid curve)
-        # Stroke Volume depends on Preload and Contractility
+        # Starling Curve (Sigmoid)
         sv_max = 100 * self.contractility
-        sv = sv_max * (effective_preload**2 / (effective_preload**2 + 8**2))
+        sv = sv_max * (eff_preload**2 / (eff_preload**2 + 8**2))
         
-        # 2. Baroreflex (Compensatory Tachycardia)
-        # Target MAP is 90. If estimated MAP drops, HR rises.
-        est_map = (sv * 70 * effective_afterload * 0.05) + 5
-        hr_drive = np.clip((90 - est_map) * 1.5, 0, 80)
+        # Baroreflex (Target MAP 90)
+        est_map = (sv * 75 * eff_afterload * 0.05) + 5
+        hr_drive = np.clip((90 - est_map) * 1.8, 0, 90)
         hr = 70 + hr_drive
         
-        # 3. Final Hemodynamics
-        co = (hr * sv) / 1000 # L/min
-        # MAP = CO * SVR
-        svr_dyne = 1200 * effective_afterload
+        # Output
+        co = (hr * sv) / 1000
+        svr_dyne = 1200 * eff_afterload
         map_val = (co * svr_dyne / 80) + 5
         
-        # 4. Metabolic (Lactate)
-        # Supply/Demand Mismatch
+        # Oxygen
         do2 = co * 1.34 * 12 * 0.98 * 10
-        lactate_gen = max(0, (400 - do2) * 0.005)
+        lac_gen = max(0, (400 - do2) * 0.01)
         
-        return {
-            'HR': hr, 'SV': sv, 'CO': co, 'MAP': map_val, 
-            'SVR': svr_dyne, 'DO2': do2, 'Lactate_Gen': lactate_gen
-        }
+        return {'HR': hr, 'SV': sv, 'CO': co, 'MAP': map_val, 'SVR': svr_dyne, 'DO2': do2, 'Lac_Gen': lac_gen}
 
-def simulate_predictive_scenario(mins=720):
-    """
-    Generates the patient history AND the "What-If" future branches.
-    """
+def simulate_omni_scenario(mins=720):
     twin = DigitalTwin()
     history = []
+    curr_lac = 1.0
     
-    # --- PHASE 1: GENERATE HISTORY (0 to Current) ---
-    current_lactate = 1.0
-    sepsis_curve = np.linspace(0, 0.8, mins) # Progressive Sepsis
+    # Generate Sepsis Curve (Progressive Shock)
+    sepsis = np.linspace(0, 0.85, mins)
+    noise_gen = np.random.normal(0, 0.02, mins)
     
     for t in range(mins):
-        # Add noise
-        noise = np.random.normal(0, 0.02)
-        
-        # Simulate Step
-        state = twin.step(sepsis_severity=sepsis_curve[t] + noise)
+        s = twin.step(sepsis[t] + noise_gen[t])
         
         # Integrate Lactate
-        current_lactate = (current_lactate * 0.995) + state['Lactate_Gen'] # Clearance vs Generation
-        state['Lactate'] = max(0.8, current_lactate)
-        state['Time'] = t
-        state['Preload_Status'] = twin.preload * (1 - sepsis_curve[t]*0.3)
-        history.append(state)
+        curr_lac = (curr_lac * 0.99) + s['Lac_Gen']
+        s['Lactate'] = max(0.8, curr_lac)
+        s['Preload_Status'] = twin.preload * (1 - sepsis[t]*0.4)
+        history.append(s)
         
-    df_hist = pd.DataFrame(history)
+    df = pd.DataFrame(history)
     
     # Derived Metrics
-    df_hist['CI'] = df_hist['CO'] / 1.8
-    df_hist['SVRI'] = df_hist['SVR'] * 1.8
-    df_hist['PP'] = df_hist['SV'] / 1.5 # Pulse Pressure proxy
+    df['CI'] = df['CO'] / 1.8
+    df['SVRI'] = df['SVR'] * 1.8
+    df['PP'] = df['SV'] / 1.5
+    df['SI'] = df['HR'] / df['MAP']
     
-    # --- PHASE 2: GENERATE PREDICTIONS (Current to +30 mins) ---
-    # We branch the simulation into 3 futures:
-    # 1. Natural Course (Do nothing)
-    # 2. Fluid Bolus (+500mL -> Preload Boost)
-    # 3. Vasopressor (+0.1mcg -> Afterload Boost)
+    # Entropy (Complexity) - Rolling STD of diff
+    df['Entropy'] = df['HR'].rolling(60).apply(lambda x: np.std(np.diff(x))).fillna(1.0)
     
-    last_severity = sepsis_curve[-1]
+    # Renal (Autoregulation Logic)
+    df['Urine'] = np.where(df['MAP'] > 65, 1.0 + np.random.normal(0,0.1,mins), np.maximum(0, 1.0 - (65-df['MAP'])*0.05))
     
-    pred_natural = []
-    pred_fluid = []
-    pred_pressor = []
+    # PCA (State Space)
+    scaler = StandardScaler()
+    pca_data = df[['HR', 'MAP', 'CI', 'SVR']].fillna(0)
+    pca_coords = PCA(n_components=2).fit_transform(scaler.fit_transform(pca_data))
+    df['PC1'] = pca_coords[:,0]
+    df['PC2'] = pca_coords[:,1]
     
-    for i in range(30): # 30 mins into future
-        severity = last_severity + (0.001 * i) # Sepsis continues
+    # --- PREDICTION BRANCHES (Multiverse) ---
+    last_sev = sepsis[-1]
+    last_lac = curr_lac
+    
+    pred_nat, pred_fluid, pred_press = [], [], []
+    
+    for i in range(30):
+        sev = last_sev + 0.001*i
+        # Natural
+        pred_nat.append(twin.step(sev)['MAP'])
+        # Fluid (+30% preload)
+        t_f = DigitalTwin(); t_f.preload *= 1.3
+        pred_fluid.append(t_f.step(sev)['MAP'])
+        # Pressor (+40% afterload)
+        t_p = DigitalTwin(); t_p.afterload *= 1.4; t_p.preload *= 1.1
+        pred_press.append(t_p.step(sev)['MAP'])
         
-        # Branch 1: Natural
-        s_nat = twin.step(sepsis_severity=severity)
-        pred_natural.append(s_nat['MAP'])
-        
-        # Branch 2: Fluids (Boost Preload by 20%)
-        twin_fluid = DigitalTwin()
-        twin_fluid.preload *= 1.3 # 30% boost
-        s_fluid = twin_fluid.step(sepsis_severity=severity)
-        pred_fluid.append(s_fluid['MAP'])
-        
-        # Branch 3: Pressors (Boost Afterload by 40%)
-        twin_pressor = DigitalTwin()
-        twin_pressor.afterload *= 1.4
-        twin_pressor.preload *= 1.1
-        s_press = twin_pressor.step(sepsis_severity=severity)
-        pred_pressor.append(s_press['MAP'])
-
-    predictions = {
-        'time': np.arange(mins, mins+30),
-        'natural': pred_natural,
-        'fluid': pred_fluid,
-        'pressor': pred_pressor
-    }
+    preds = {'time': np.arange(mins, mins+30), 'nat': pred_nat, 'fluid': pred_fluid, 'press': pred_press}
     
-    return df_hist, predictions
+    return df, preds
 
-# --- 3. NEXT-GEN VISUALIZATIONS ---
+# --- 3. VISUALIZATION SUITE ---
 
-def plot_predictive_bullseye(df, predictions, curr_time):
-    """
-    The 'Money Plot'. Shows current state AND vectors for interventions.
-    """
+def plot_spark_spc(df, col, color, thresh_low, thresh_high):
+    """Sparkline with Background SPC Zones."""
+    data = df[col].iloc[-60:]
+    fig = go.Figure()
+    
+    # Zones
+    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=thresh_low, y1=thresh_high, 
+                  fillcolor="rgba(255,255,255,0.05)", line_width=0, layer="below")
+    
+    # Line
+    fig.add_trace(go.Scatter(x=data.index, y=data.values, mode='lines', 
+                             line=dict(color=color, width=2), fill='tozeroy', fillcolor=f"rgba{color[1:-1]},0.1)"))
+    
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=50, margin=dict(l=0,r=0,t=0,b=0), xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return fig
+
+def plot_predictive_compass(df, preds, curr_time):
+    """The Bullseye with Intervention Vectors."""
     data = df.iloc[max(0, curr_time-60):curr_time]
     cur = data.iloc[-1]
     
     fig = go.Figure()
     
-    # 1. Background Diagnostic Zones
-    fig.add_shape(type="rect", x0=0, y0=0, x1=2.5, y1=65, fillcolor='rgba(239,68,68,0.1)', layer="below", line_width=0) # Crit
-    fig.add_shape(type="rect", x0=2.5, y0=65, x1=6.0, y1=100, fillcolor='rgba(16,185,129,0.1)', layer="below", line_width=0) # Goal
-    
-    # 2. History Trend
-    fig.add_trace(go.Scatter(x=data['CI'], y=data['MAP'], mode='lines', 
-                             line=dict(color='gray', width=1, dash='dot'), name='History'))
-    
-    # 3. Current State
-    fig.add_trace(go.Scatter(x=[cur['CI']], y=[cur['MAP']], mode='markers',
-                             marker=dict(color='black', size=15, symbol='circle-x'), name='Current'))
-    
-    # 4. PREDICTIVE VECTORS
-    
-    # Fluid Vector (Increases CI mostly, MAP slightly)
-    vec_fluid_x = cur['CI'] * 1.25
-    vec_fluid_y = predictions['fluid'][-1]
-    
-    fig.add_annotation(
-        x=vec_fluid_x, y=vec_fluid_y, ax=cur['CI'], ay=cur['MAP'],
-        xref="x", yref="y", axref="x", ayref="y",
-        showarrow=True, arrowhead=2, arrowwidth=2, arrowcolor="#3b82f6",
-        text="FLUIDS", font=dict(color="#3b82f6", weight="bold")
-    )
-    
-    # Pressor Vector (Increases MAP mostly, CI neutral/down)
-    vec_press_x = cur['CI'] * 1.05
-    vec_press_y = predictions['pressor'][-1]
-    
-    fig.add_annotation(
-        x=vec_press_x, y=vec_press_y, ax=cur['CI'], ay=cur['MAP'],
-        xref="x", yref="y", axref="x", ayref="y",
-        showarrow=True, arrowhead=2, arrowwidth=2, arrowcolor="#d946ef",
-        text="PRESSORS", font=dict(color="#d946ef", weight="bold")
-    )
-
-    fig.update_layout(template="plotly_white", height=350, margin=dict(l=10,r=10,t=40,b=10),
-                      title="<b>Predictive Hemodynamic Compass</b>",
-                      xaxis=dict(title="Cardiac Index (Flow)", range=[1.5, 6.0], gridcolor=THEME['grid']),
-                      yaxis=dict(title="MAP (Pressure)", range=[40, 100], gridcolor=THEME['grid']), showlegend=False)
-    return fig
-
-def plot_organ_radar(df, curr_time):
-    """
-    Multivariate Risk Polygon.
-    """
-    cur = df.iloc[-1]
-    
-    # Normalize Risks (0 = Safe, 1 = Critical)
-    risk_renal = np.clip((65 - cur['MAP'])/20, 0, 1) # Low MAP = AKI
-    risk_cardiac = np.clip((cur['HR'] - 100)/50, 0, 1) # Tachy = Ischemia
-    risk_meta = np.clip((cur['Lactate'] - 1.5)/4, 0, 1) # Lactate = Cell Death
-    risk_perf = np.clip((2.2 - cur['CI'])/1.0, 0, 1) # Low CI = Shock
-    
-    r = [risk_renal, risk_cardiac, risk_meta, risk_perf, risk_renal]
-    theta = ['Renal (AKI)', 'Cardiac (Stress)', 'Metabolic (Debt)', 'Perfusion (Shock)', 'Renal (AKI)']
-    
-    fig = go.Figure()
-    
-    # Safe Zone
-    fig.add_trace(go.Scatterpolar(r=[0.2]*5, theta=theta, fill='toself', 
-                                  fillcolor='rgba(16,185,129,0.2)', line=dict(width=0), hoverinfo='skip'))
-    
-    # Patient State
-    fig.add_trace(go.Scatterpolar(r=r, theta=theta, fill='toself', 
-                                  fillcolor='rgba(239,68,68,0.2)', line=dict(color='#ef4444', width=2)))
-    
-    fig.update_layout(
-        polar=dict(radialaxis=dict(visible=False, range=[0, 1])),
-        showlegend=False, height=250, margin=dict(l=30,r=30,t=20,b=20),
-        title="<b>Organ Risk Topology</b>"
-    )
-    return fig
-
-def plot_horizon_multiverse(df, predictions, curr_time):
-    """
-    Visualizes the "Multiverse" of outcomes based on intervention.
-    """
-    hist_data = df.iloc[max(0, curr_time-60):curr_time]
-    
-    fig = go.Figure()
+    # Background Diagnostic Zones
+    fig.add_shape(type="rect", x0=0, y0=0, x1=2.5, y1=65, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
+    fig.add_shape(type="rect", x0=2.5, y0=65, x1=6.0, y1=100, fillcolor=THEME['zone_ok'], line_width=0, layer="below")
     
     # History
-    fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data['MAP'], 
-                             line=dict(color='black', width=2), name='History'))
+    fig.add_trace(go.Scatter(x=data['CI'], y=data['MAP'], mode='lines', 
+                             line=dict(color='#555', width=1, dash='dot'), name='Trend'))
     
-    # Future 1: Natural (Crash)
-    fig.add_trace(go.Scatter(x=predictions['time'], y=predictions['natural'],
-                             line=dict(color='gray', dash='dot'), name='No Intervention'))
+    # Current
+    fig.add_trace(go.Scatter(x=[cur['CI']], y=[cur['MAP']], mode='markers',
+                             marker=dict(color='white', size=12, symbol='cross'), name='Now'))
     
-    # Future 2: Fluid (Blue)
-    fig.add_trace(go.Scatter(x=predictions['time'], y=predictions['fluid'],
-                             line=dict(color='#3b82f6', width=2), name='+500mL Bolus'))
-    
-    # Future 3: Pressor (Purple)
-    fig.add_trace(go.Scatter(x=predictions['time'], y=predictions['pressor'],
-                             line=dict(color='#d946ef', width=2), name='+Norepinephrine'))
-    
-    # Threshold
-    fig.add_hline(y=65, line_color='red', line_dash='solid', opacity=0.3, annotation_text="CRITICAL MAP")
+    # Vectors (Fluid vs Pressor)
+    # Fluid (Blue)
+    fig.add_annotation(x=cur['CI']*1.25, y=preds['fluid'][-1], ax=cur['CI'], ay=cur['MAP'],
+                       xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['hr'],
+                       text="FLUIDS", font=dict(color=THEME['hr'], size=10))
+    # Pressor (Purple)
+    fig.add_annotation(x=cur['CI']*1.05, y=preds['press'][-1], ax=cur['CI'], ay=cur['MAP'],
+                       xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['do2'],
+                       text="PRESSOR", font=dict(color=THEME['do2'], size=10))
 
-    fig.update_layout(template="plotly_white", height=250, margin=dict(l=10,r=10,t=30,b=10),
-                      title="<b>Intervention Simulation (Next 30 min)</b>",
-                      xaxis=dict(title="Timeline", gridcolor=THEME['grid']),
-                      yaxis=dict(title="Projected MAP", gridcolor=THEME['grid']),
-                      legend=dict(orientation="h", y=1.1))
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=300, margin=dict(l=10,r=10,t=40,b=10), title="<b>Predictive Compass</b>",
+                      xaxis=dict(title="Cardiac Index", range=[1.5, 6], gridcolor=THEME['grid']),
+                      yaxis=dict(title="MAP", range=[40, 100], gridcolor=THEME['grid']), showlegend=False)
     return fig
 
-def plot_starling_dynamic(df, curr_time):
-    """
-    Frank-Starling with Dynamic Elastance (Eadyn) overlay.
-    """
-    data = df.iloc[max(0, curr_time-60):curr_time]
-    
+def plot_multiverse(df, preds, curr_time):
+    """Time-series projection."""
+    hist = df.iloc[max(0, curr_time-60):curr_time]
     fig = go.Figure()
     
-    # Curve
-    x = np.linspace(0, 20, 100)
-    y = np.log(x+1)*30
-    fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='lightgray'), name='Ideal'))
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MAP'], line=dict(color='white', width=2), name='Past'))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['nat'], line=dict(color='#555', dash='dot'), name='Natural'))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['fluid'], line=dict(color=THEME['hr']), name='Fluid'))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['press'], line=dict(color=THEME['do2']), name='Pressor'))
     
-    # Patient Trajectory
-    # FIX: Removed invalid 'arrow' property. Used markers to show direction.
-    fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines',
-                             line=dict(color=THEME['ci'], width=3), name='Trajectory'))
+    fig.add_hline(y=65, line_color='red', line_dash='dot', opacity=0.5)
     
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Intervention Multiverse</b>",
+                      xaxis=dict(title="Time", gridcolor=THEME['grid']), 
+                      yaxis=dict(title="MAP", gridcolor=THEME['grid']), showlegend=False)
+    return fig
+
+def plot_pca_space(df, curr_time):
+    """Global Stability State Space."""
+    data = df.iloc[max(0, curr_time-200):curr_time]
+    fig = go.Figure()
+    
+    # Safe Circle
+    fig.add_shape(type="circle", x0=-2, y0=-2, x1=2, y1=2, line_color=THEME['ci'])
+    
+    fig.add_trace(go.Scatter(x=data['PC1'], y=data['PC2'], mode='lines', 
+                             line=dict(color=THEME['pca'], width=1), opacity=0.5))
+    fig.add_trace(go.Scatter(x=[data['PC1'].iloc[-1]], y=[data['PC2'].iloc[-1]], mode='markers',
+                             marker=dict(color='red', size=8)))
+                             
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=0,r=0,t=30,b=0), title="<b>Global State (PCA)</b>",
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return fig
+
+def plot_oxygen_debt(df, curr_time):
+    """DO2 vs Lactate."""
+    data = df.iloc[max(0, curr_time-120):curr_time]
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    fig.add_trace(go.Scatter(x=data.index, y=data['DO2'], fill='tozeroy', 
+                             fillcolor="rgba(176, 38, 255, 0.1)", line=dict(color=THEME['do2']), name='DO2'), secondary_y=False)
+    fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], line=dict(color='red', width=2), name='Lactate'), secondary_y=True)
+    
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>O2 Supply/Demand</b>", showlegend=False)
+    return fig
+
+def plot_starling_vector(df, curr_time):
+    """Vectorized Fluid Responsiveness."""
+    data = df.iloc[max(0, curr_time-30):curr_time]
+    fig = go.Figure()
+    
+    x_ideal = np.linspace(0, 20, 50); y_ideal = np.log(x_ideal+1)*30
+    fig.add_trace(go.Scatter(x=x_ideal, y=y_ideal, line=dict(color='#333', dash='dot')))
+    
+    # Trajectory
+    fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', line=dict(color=THEME['ci'])))
     # Current Head
     fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], 
-                             mode='markers', marker=dict(color=THEME['ci'], size=10, symbol='diamond'), name='Current'))
-    
-    # Calculate Slope (Fluid Responsiveness)
-    d_sv = data['SV'].iloc[-1] - data['SV'].iloc[0]
-    d_pre = data['Preload_Status'].iloc[-1] - data['Preload_Status'].iloc[0] + 0.01
-    slope = d_sv / d_pre
-    
-    txt = "FLUID RESPONDER" if slope > 2.0 else "NON-RESPONDER"
-    col = "green" if slope > 2.0 else "red"
-    
-    fig.add_annotation(x=10, y=10, text=f"{txt}<br>(Slope: {slope:.1f})", 
-                       font=dict(color=col, weight="bold"), showarrow=False)
+                             mode='markers', marker=dict(color='white', size=8, symbol='triangle-up')))
+                             
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Starling Vector</b>",
+                      xaxis=dict(title="Preload", gridcolor=THEME['grid']), yaxis=dict(title="SV", gridcolor=THEME['grid']))
+    return fig
 
-    fig.update_layout(template="plotly_white", height=250, margin=dict(l=10,r=10,t=30,b=10),
-                      title="<b>Frank-Starling Mechanics</b>",
-                      xaxis=dict(title="Preload (CVP proxy)", gridcolor=THEME['grid']),
-                      yaxis=dict(title="Stroke Volume", gridcolor=THEME['grid']), showlegend=False)
+def plot_renal_cliff(df, curr_time):
+    """MAP vs Urine."""
+    data = df.iloc[max(0, curr_time-120):curr_time]
+    fig = go.Figure()
+    
+    # Cliff
+    fig.add_shape(type="rect", x0=30, y0=0, x1=65, y1=0.5, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
+    
+    fig.add_trace(go.Scatter(x=data['MAP'], y=data['Urine'], mode='lines+markers', 
+                             marker=dict(color=np.linspace(0,1,len(data)), colorscale='Reds'), line=dict(color='#555')))
+    
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Renal Autoregulation</b>",
+                      xaxis=dict(title="MAP", gridcolor=THEME['grid']), yaxis=dict(title="Urine", gridcolor=THEME['grid']))
+    return fig
+
+def plot_spectrum(df, curr_time):
+    """HRV PSD."""
+    data = df['HR'].iloc[max(0, curr_time-64):curr_time].values
+    if len(data) < 64: return go.Figure()
+    f, Pxx = welch(data, fs=1/60)
+    
+    fig = go.Figure(go.Scatter(x=f, y=Pxx, fill='tozeroy', line=dict(color=THEME['svr'])))
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=150, margin=dict(l=0,r=0,t=20,b=0), title="<b>Autonomic PSD</b>",
+                      xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=False))
     return fig
