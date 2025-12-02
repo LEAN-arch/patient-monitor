@@ -133,6 +133,4 @@ with c_mid:
 
 with c_right:
     # 3. Early Warning
-    fig_auto = utils.plot_autonomic_strip(df, curr_time)
-    st.plotly_chart(fig_auto, use_container_width=True)
-    st.caption("ℹ️ **Early Warning:** Drop in Entropy + PI indicates autonomic stress response *before* BP drops.")
+    fig_auto = utils.plot_autonomic_str
