@@ -177,8 +177,13 @@ def plot_frank_starling_vector(df, curr_time):
     y = np.log(x)*25 - 50
     fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='lightgray', dash='dot'), name='Ideal'))
     
+    # Trajectory
     fig.add_trace(go.Scatter(x=data['DBP'], y=data['PP'], mode='lines', 
-                             line=dict(color=THEME['flow'], width=3, arrow='bar'), name='Patient'))
+                             line=dict(color=THEME['flow'], width=3), name='History'))
+    
+    # Current Head (Vector Tip)
+    fig.add_trace(go.Scatter(x=[data['DBP'].iloc[-1]], y=[data['PP'].iloc[-1]], mode='markers',
+                             marker=dict(color=THEME['flow'], size=12, symbol='triangle-up'), name='Current'))
     
     slope = (data['PP'].iloc[-1] - data['PP'].iloc[0]) / (data['DBP'].iloc[-1] - data['DBP'].iloc[0] + 0.01)
     status, color = ("FLUID RESPONSIVE", "green") if slope > 0.5 else ("NON-RESPONDER", "red")
