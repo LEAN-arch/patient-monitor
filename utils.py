@@ -115,14 +115,12 @@ def simulate_predictive_scenario(mins=720):
     # 3. Vasopressor (+0.1mcg -> Afterload Boost)
     
     last_severity = sepsis_curve[-1]
-    last_lactate = current_lactate
     
     pred_natural = []
     pred_fluid = []
     pred_pressor = []
     
     for i in range(30): # 30 mins into future
-        t_fut = mins + i
         severity = last_severity + (0.001 * i) # Sepsis continues
         
         # Branch 1: Natural
@@ -130,7 +128,6 @@ def simulate_predictive_scenario(mins=720):
         pred_natural.append(s_nat['MAP'])
         
         # Branch 2: Fluids (Boost Preload by 20%)
-        # Create a temp twin
         twin_fluid = DigitalTwin()
         twin_fluid.preload *= 1.3 # 30% boost
         s_fluid = twin_fluid.step(sepsis_severity=severity)
@@ -139,7 +136,6 @@ def simulate_predictive_scenario(mins=720):
         # Branch 3: Pressors (Boost Afterload by 40%)
         twin_pressor = DigitalTwin()
         twin_pressor.afterload *= 1.4
-        # Pressors also slightly increase preload (venoconstriction)
         twin_pressor.preload *= 1.1
         s_press = twin_pressor.step(sepsis_severity=severity)
         pred_pressor.append(s_press['MAP'])
@@ -164,7 +160,7 @@ def plot_predictive_bullseye(df, predictions, curr_time):
     
     fig = go.Figure()
     
-    # 1. Background Diagnostic Zones (Subtle)
+    # 1. Background Diagnostic Zones
     fig.add_shape(type="rect", x0=0, y0=0, x1=2.5, y1=65, fillcolor='rgba(239,68,68,0.1)', layer="below", line_width=0) # Crit
     fig.add_shape(type="rect", x0=2.5, y0=65, x1=6.0, y1=100, fillcolor='rgba(16,185,129,0.1)', layer="below", line_width=0) # Goal
     
@@ -176,8 +172,7 @@ def plot_predictive_bullseye(df, predictions, curr_time):
     fig.add_trace(go.Scatter(x=[cur['CI']], y=[cur['MAP']], mode='markers',
                              marker=dict(color='black', size=15, symbol='circle-x'), name='Current'))
     
-    # 4. PREDICTIVE VECTORS (The "What-If")
-    # We estimate where the dot moves based on the prediction engine
+    # 4. PREDICTIVE VECTORS
     
     # Fluid Vector (Increases CI mostly, MAP slightly)
     vec_fluid_x = cur['CI'] * 1.25
@@ -210,7 +205,6 @@ def plot_predictive_bullseye(df, predictions, curr_time):
 def plot_organ_radar(df, curr_time):
     """
     Multivariate Risk Polygon.
-    Visualizes 'Therapeutic Conflict' (e.g. Kidneys want flow, Lungs want dry).
     """
     cur = df.iloc[-1]
     
@@ -287,17 +281,19 @@ def plot_starling_dynamic(df, curr_time):
     y = np.log(x+1)*30
     fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='lightgray'), name='Ideal'))
     
-    # Patient
+    # Patient Trajectory
+    # FIX: Removed invalid 'arrow' property. Used markers to show direction.
     fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines',
-                             line=dict(color=THEME['ci'], width=3, arrow='bar')))
+                             line=dict(color=THEME['ci'], width=3), name='Trajectory'))
+    
+    # Current Head
+    fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], 
+                             mode='markers', marker=dict(color=THEME['ci'], size=10, symbol='diamond'), name='Current'))
     
     # Calculate Slope (Fluid Responsiveness)
     d_sv = data['SV'].iloc[-1] - data['SV'].iloc[0]
     d_pre = data['Preload_Status'].iloc[-1] - data['Preload_Status'].iloc[0] + 0.01
     slope = d_sv / d_pre
-    
-    # Eadyn logic (interaction of PP and SV)
-    ppv = 12 # Simulated Pulse Pressure Variation %
     
     txt = "FLUID RESPONDER" if slope > 2.0 else "NON-RESPONDER"
     col = "green" if slope > 2.0 else "red"
