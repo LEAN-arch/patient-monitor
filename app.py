@@ -1,133 +1,149 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import utils # Importing the new robust utils
+import utils
 
-# --- Config ---
-st.set_page_config(page_title="ICU Sentinel AI", layout="wide", initial_sidebar_state="collapsed")
+# --- PAGE CONFIG ---
+st.set_page_config(
+    page_title="ICU Sentinel Pro", 
+    layout="wide", 
+    initial_sidebar_state="collapsed"
+)
 
-# Custom CSS for clinical dashboard look
+# --- CUSTOM CSS (The "Commercial" Skin) ---
 st.markdown("""
 <style>
-    .block-container {padding-top: 1rem; padding-bottom: 0rem;}
-    h1, h2, h3 {margin-bottom: 0rem;}
-    .stMetric {background-color: #1E1E1E; padding: 10px; border-radius: 5px; border: 1px solid #333;}
-    .big-font {font-size:20px !important; font-weight: bold;}
+    /* Global Background */
+    .stApp {
+        background-color: #0E1117;
+    }
+    
+    /* Hardware Monitor Card Style */
+    .metric-card {
+        background-color: #1E1E1E;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 15px;
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    .metric-label {
+        color: #888;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+    .metric-value {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 2.2rem;
+        font-weight: bold;
+    }
+    .metric-unit {
+        font-size: 0.9rem;
+        color: #666;
+    }
+    
+    /* Neon Colors for specific metrics */
+    .color-hr { color: #00ff00; }
+    .color-sbp { color: #ff3333; }
+    .color-spo2 { color: #00ccff; }
+    .color-pi { color: #d142f5; }
+    .color-si { color: #ffa500; }
+    
+    /* Alert Banners */
+    .alert-box {
+        padding: 15px;
+        border-radius: 5px;
+        margin-bottom: 20px;
+        font-weight: bold;
+    }
+    .alert-safe { background-color: rgba(0, 255, 0, 0.1); border: 1px solid #00ff00; color: #00ff00; }
+    .alert-warn { background-color: rgba(255, 165, 0, 0.1); border: 1px solid #ffa500; color: #ffa500; }
+    .alert-crit { background-color: rgba(255, 0, 0, 0.2); border: 1px solid #ff0000; color: #ff0000; }
+    
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. Data Loading & Processing ---
+# --- DATA PREP ---
 @st.cache_data
-def get_sim_data():
-    return utils.simulate_patient(mins_total=720)
+def load_data():
+    df = utils.simulate_patient()
+    df['SI'] = df['HR'] / df['SBP']
+    return df
 
-df_full = get_sim_data()
+df_full = load_data()
 VARS = ['HR','SBP','SpO2','RR','PI']
 
-with st.spinner("Analyzing hemodynamic stability..."):
-    # Z-Score Normalization (Standardization against patient baseline)
-    z_full, cov_est = utils.fit_var_and_residuals_full(df_full[VARS], baseline_window=120)
-    # Mahalanobis Risk Score
-    risk_full, cov_inv = utils.compute_mahalanobis_risk(z_full, cov_est)
-    # Calculate Shock Index
-    df_full['SI'] = df_full['HR'] / df_full['SBP']
+# Analytics
+z_full, cov_est = utils.fit_var_and_residuals_full(df_full[VARS])
+risk_full, _ = utils.compute_mahalanobis_risk(z_full, cov_est)
 
-# --- 2. Sidebar Controls ---
+# --- SIDEBAR CONTROLS ---
 with st.sidebar:
-    st.header("Simulation Timeline")
-    curr_time = st.slider("Time (minutes)", 60, 720, 720)
-    view_window = st.selectbox("Lookback Window", [60, 120, 240], index=1)
-    
-    st.markdown("### Clinical Scenario")
-    st.info("""
-    **Patient ID:** 8392-A
-    **Admit:** Post-Op Abdominal
-    **Event:** Occult Bleeding
-    
-    **Instructions:**
-    1. Move slider to **min 350** (Stable).
-    2. Move to **min 450** (Compensated Shock: HR up, PI down, BP normal).
-    3. Move to **min 600** (Decompensation: Hypotension).
-    """)
+    st.header("Playback Control")
+    curr_time = st.slider("Timeline (mins)", 120, 720, 720)
+    view_window = st.selectbox("Zoom", [60, 180, 360], index=1)
+    st.markdown("---")
+    st.markdown("**Simulation Guide:**")
+    st.markdown("- **< 400m:** Stable Baseline")
+    st.markdown("- **400-550m:** Compensated Shock (High HR, Low PI)")
+    st.markdown("- **> 550m:** Decompensated Shock (Low BP)")
 
-# --- 3. Data Slicing ---
+# --- SLICING ---
 start_idx = max(0, curr_time - view_window)
-end_idx = curr_time
-
-# Slicing for plots
-df_view = df_full.iloc[start_idx:end_idx]
-z_view = z_full.iloc[start_idx:end_idx]
-t_axis = df_view.index
-
-# Current Instant values
+df_view = df_full.iloc[start_idx:curr_time]
+z_view = z_full.iloc[start_idx:curr_time]
 current_vals = df_full.iloc[curr_time-1]
 current_risk = risk_full[curr_time-1]
-current_si = current_vals['SI']
 
-# --- 4. Dashboard Header (Heads Up Display) ---
-col_h1, col_h2, col_h3, col_h4 = st.columns([2, 1, 1, 2])
-
-with col_h1:
-    st.title("🏥 ICU Sentinel")
-    st.caption(f"Real-time Hemodynamic Monitoring | T={curr_time}min")
-
-with col_h2:
-    st.metric("Risk Score", f"{current_risk:.1f}", 
-              delta="High Risk" if current_risk > 25 else "Stable", 
-              delta_color="inverse")
-
-with col_h3:
-    st.metric("Shock Index", f"{current_si:.2f}", 
-              delta="Warning" if current_si > 0.9 else "Normal", 
-              delta_color="inverse")
-
-with col_h4:
-    # Clinical Action Logic
+# --- TOP BAR: ALERT SYSTEM ---
+status_col, spacer = st.columns([3, 1])
+with status_col:
     if current_risk < 15:
-        st.success("✅ **PATIENT STABLE**\n\nContinue routine monitoring.")
+        st.markdown(f'<div class="alert-box alert-safe">✅ MONITORING ACTIVE - PATIENT STABLE (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
     elif current_risk < 25:
-        st.warning("⚠️ **EARLY WARNING: COMPENSATORY EFFORT**\n\nCheck perfusion (PI). Assess fluid responsiveness.")
+        st.markdown(f'<div class="alert-box alert-warn">⚠️ EARLY WARNING - HEMODYNAMIC COMPENSATION DETECTED (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
     else:
-        st.error("🚨 **CRITICAL: DECOMPENSATION**\n\nImmediate assessment required. Evaluate for Shock Protocol.")
+        st.markdown(f'<div class="alert-box alert-crit">🚨 CRITICAL ALARM - DECOMPENSATION / SHOCK STATE (Risk: {current_risk:.1f})</div>', unsafe_allow_html=True)
 
-st.divider()
+# --- MAIN DASHBOARD GRID ---
+# Layout: Left (Live Monitors) - Right (Advanced Analytics)
+c_left, c_right = st.columns([1, 3])
 
-# --- 5. Main Clinical Workspace ---
-# Left Column: Timeline Trends (The "Story")
-# Right Column: Instantaneous Profile (The "Status")
-
-col_left, col_right = st.columns([2, 1])
-
-with col_left:
-    st.markdown("#### 1. Hemodynamic & Perfusion Trends")
-    # Improved Vitals Plot (Coupled HR/BP + SI + PI)
-    fig_vitals = utils.plot_combined_vitals(df_view, t_axis, df_view['SI'])
-    st.plotly_chart(fig_vitals, use_container_width=True)
+with c_left:
+    st.markdown("### LIVE VITALS")
     
-    st.markdown("#### 2. Anatomy of Instability (Contribution Heatmap)")
-    # Heatmap is better than bar chart because it shows the SEQUENCE of deterioration
-    fig_heat = utils.plot_temporal_contribution(z_view, VARS)
-    st.plotly_chart(fig_heat, use_container_width=True)
+    # Custom HTML Metric Cards
+    def metric_card(label, value, unit, color_class):
+        st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value {color_class}">{value}</div>
+            <div class="metric-unit">{unit}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-with col_right:
-    st.markdown("#### 3. Current Status")
-    
-    # A. Risk Gauge
-    fig_gauge = utils.plot_risk_gauge(current_risk)
-    st.plotly_chart(fig_gauge, use_container_width=True)
-    
-    # B. Physiological Footprint (Radar)
-    # This helps distinguish 'why' the risk is high (Resp vs Hemo)
-    fig_radar = utils.plot_clinical_radar(current_vals, df_full.iloc[:120].mean())
-    st.plotly_chart(fig_radar, use_container_width=True)
+    metric_card("Heart Rate", int(current_vals['HR']), "bpm", "color-hr")
+    metric_card("Invasive BP", f"{int(current_vals['SBP'])}/80", "mmHg", "color-sbp")
+    metric_card("Shock Index", f"{current_vals['SI']:.2f}", "ratio", "color-si")
+    metric_card("Perfusion Idx", f"{current_vals['PI']:.2f}", "%", "color-pi")
+    metric_card("SpO2", int(current_vals['SpO2']), "%", "color-spo2")
 
-    # C. Raw Vitals Table (Quick Glance)
-    st.markdown("#### Live Vitals")
-    cols = st.columns(2)
-    cols[0].metric("HR", f"{int(current_vals['HR'])}")
-    cols[1].metric("SBP", f"{int(current_vals['SBP'])}")
-    cols[0].metric("SpO2", f"{int(current_vals['SpO2'])}%")
-    cols[1].metric("RR", f"{int(current_vals['RR'])}")
-    st.metric("Perfusion Index (PI)", f"{current_vals['PI']:.2f}")
-    if current_vals['PI'] < 1.0:
-        st.caption("🔴 Poor Peripheral Perfusion")
+    st.markdown("### RISK PROFILE")
+    fig_gauge = utils.plot_gauge_commercial(current_risk)
+    st.plotly_chart(fig_gauge, use_container_width=True, config={'displayModeBar': False})
+    
+    st.markdown("### CLINICAL AXIS")
+    fig_radar = utils.plot_radar_commercial(current_vals)
+    st.plotly_chart(fig_radar, use_container_width=True, config={'displayModeBar': False})
+
+with c_right:
+    # 1. Main Monitor Strip
+    st.markdown("### HEMODYNAMIC TRENDS")
+    fig_strip = utils.plot_monitor_strip(df_view, df_view.index, df_view['SI'])
+    st.plotly_chart(fig_strip, use_container_width=True, config={'displayModeBar': False})
+    
+    # 2. Deviation Heatmap
+    st.markdown("### PHYSIOLOGICAL DEVIATION MATRIX")
+    fig_heat = utils.plot_heatmap_commercial(z_view, VARS)
+    st.plotly_chart(fig_heat, use_container_width=True, config={'displayModeBar': False})
