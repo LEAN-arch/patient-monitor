@@ -16,49 +16,72 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. THEMES & CSS (Formerly themes.py)
+# 2. THEMES & CSS (Light Mode)
 # ==========================================
 THEME_CSS = """
 <style>
 :root{
-  --bg: #00111a;
-  --card-bg: #071629;
-  --muted: #9aa7b2;
-  --text: #dfeff6;
-  --accent: #00c2ff;
-  --warn: #ffb020;
-  --danger: #ff3b5c;
+  --bg: #f1f5f9;
+  --card-bg: #ffffff;
+  --muted: #64748b;
+  --text: #0f172a;
+  --accent: #0284c7;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --success: #16a34a;
 }
 .stApp { background-color: var(--bg); color: var(--text); }
 .titan-card {
   background: var(--card-bg);
   border-radius: 8px;
   padding: 10px;
-  border: 1px solid rgba(255,255,255,0.04);
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
   margin-bottom: 10px;
 }
 .kpi-lbl { font-size:0.75rem; color:var(--muted); font-weight:700; text-transform:uppercase; }
-.kpi-val { font-size:1.25rem; font-weight:800; font-family: 'Roboto Mono', monospace; }
-.alert-header { background: #051622; border-left: 6px solid var(--accent); padding: 12px; margin-bottom: 12px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
-.section-header { font-size:1.05rem; font-weight:800; color:var(--text); border-bottom:1px solid rgba(255,255,255,0.04); margin-top:18px; margin-bottom:10px; padding-bottom:6px; }
-.small { color: #9fb3c4; font-size:0.85rem; }
+.kpi-val { font-size:1.25rem; font-weight:800; font-family: 'Roboto Mono', monospace; color: var(--text); }
+.alert-header { 
+    background: #ffffff; 
+    border-left: 6px solid var(--accent); 
+    padding: 15px; 
+    margin-bottom: 15px; 
+    display:flex; 
+    justify-content:space-between; 
+    align-items:center; 
+    gap:8px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    border-radius: 6px;
+}
+.section-header { 
+    font-size:1.1rem; 
+    font-weight:800; 
+    color:var(--text); 
+    border-bottom:2px solid #e2e8f0; 
+    margin-top:25px; 
+    margin-bottom:15px; 
+    padding-bottom:8px; 
+}
+.small { color: var(--muted); font-size:0.9rem; }
 </style>
 """
 
 # ==========================================
-# 3. UTILS & PHYSIOLOGY ENGINE (Formerly utils.py)
+# 3. UTILS & PHYSIOLOGY ENGINE
 # ==========================================
 
-# Theme constants for plotting
+# Theme constants for plotting (High Contrast for Light Mode)
 PLOT_THEME = {
-    "bg": "#000000",
-    "map": "#ff2975",
-    "ci": "#00ff33",
-    "do2": "#8c1eff",
-    "svr": "#ff9900",
-    "ok": "rgba(0,255,51,0.08)",
-    "warn": "rgba(255,195,0,0.08)",
-    "crit": "rgba(255,41,117,0.08)",
+    "bg": "#ffffff",
+    "map": "#be185d",      # Magenta/Rose
+    "ci": "#059669",       # Emerald Green
+    "do2": "#7c3aed",      # Violet
+    "svr": "#d97706",      # Amber
+    "ok": "rgba(22, 163, 74, 0.1)",
+    "warn": "rgba(217, 119, 6, 0.1)",
+    "crit": "rgba(220, 38, 38, 0.1)",
+    "text": "#1e293b",
+    "grid": "#e2e8f0"
 }
 
 # Clinical thresholds
@@ -179,7 +202,7 @@ def simulate_titan_data(mins: int = 720,
     df = pd.DataFrame(rows)
     df.index.name = "minute"
 
-    df["CI"] = df["CO"] / 1.8
+    df["CI"] = df["CO"] / 1.8  # normalize CO to CI assuming BSA ~1.8
     df["SVRI"] = df["SVR"] * 1.8
     df["PP"] = df["SV"] / 1.5
     df["MAP"] = df["MAP"].replace(0, np.nan).fillna(method="ffill").fillna(1.0)
@@ -198,13 +221,15 @@ def simulate_titan_data(mins: int = 720,
     df["Urine"] = urine_sigmoid(df["MAP"]) + rng.normal(0.0, 0.06, size=len(df))
     df["Urine"] = df["Urine"].clip(lower=0.0)
 
-    # PCA
+    # PCA for embedding (return PC1/PC2)
     pca_feats = ["HR", "MAP", "CI", "SVR"]
     pca_input = df[pca_feats].fillna(method="ffill").fillna(0.0)
     coords = PCA(n_components=2).fit_transform(StandardScaler().fit_transform(pca_input))
     df["PC1"], df["PC2"] = coords[:, 0], coords[:, 1]
 
+    # Predictions: build forecast dictionary using helper
     preds = predict_horizon(base, sepsis[-1], horizon=30)
+
     return df, preds
 
 def compute_alerts(df: pd.DataFrame, lookback_min: int = 15) -> Dict[str, Any]:
@@ -263,7 +288,7 @@ def compute_alerts(df: pd.DataFrame, lookback_min: int = 15) -> Dict[str, Any]:
     return out
 
 # ==========================================
-# 4. CLINICAL LOGIC (Formerly clinical_logic.py)
+# 4. CLINICAL LOGIC
 # ==========================================
 def build_action_plan(df: pd.DataFrame, alerts: Dict[str, Any]) -> List[Dict[str, str]]:
     plan = []
@@ -297,10 +322,10 @@ def build_action_plan(df: pd.DataFrame, alerts: Dict[str, Any]) -> List[Dict[str
     return dedup
 
 # ==========================================
-# 5. VISUALIZATIONS (Formerly visuals.py)
+# 5. VISUALIZATIONS
 # ==========================================
 def _base_layout(fig: go.Figure, height=260, title=None) -> go.Figure:
-    fig.update_layout(template="plotly_dark",
+    fig.update_layout(template="plotly_white",
                       paper_bgcolor="rgba(0,0,0,0)",
                       plot_bgcolor="rgba(0,0,0,0)",
                       height=height, margin=dict(l=8,r=8,t=30 if title else 6,b=6))
@@ -313,8 +338,14 @@ def sparkline(df: pd.DataFrame, col: str, color: str, low: float, high: float) -
     fig = go.Figure()
     if data.empty:
         return _base_layout(fig, height=48)
-    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=low, y1=high, fillcolor="rgba(255,255,255,0.03)", line_width=0, layer="below")
-    fig.add_trace(go.Scatter(x=data.index, y=data.values, mode="lines", line=dict(color=color, width=2), fill="tozeroy", fillcolor="rgba(255,255,255,0.03)"))
+    
+    # Background SPC zone
+    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=low, y1=high, 
+                  fillcolor="rgba(0,0,0,0.03)", line_width=0, layer="below")
+    
+    fig.add_trace(go.Scatter(x=data.index, y=data.values, mode="lines", 
+                             line=dict(color=color, width=2), fill="tozeroy", 
+                             fillcolor=f"rgba{color.lstrip('#')[0:2]},{color.lstrip('#')[2:4]},{color.lstrip('#')[4:6]},0.1)")) # Approximate Hex to rgba
     _base_layout(fig, height=48)
     fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
     return fig
@@ -324,14 +355,16 @@ def predictive_compass(df: pd.DataFrame, preds: Dict[str, Any], curr_idx: int) -
     window = df.iloc[start:curr_idx]
     cur = window.iloc[-1] if len(window) else df.iloc[-1]
     fig = go.Figure()
+    
+    # Diagnostic Zones
     fig.add_shape(type="rect", x0=0, y0=0, x1=2.5, y1=CLIN_THRESH["MAP_TARGET"], fillcolor=PLOT_THEME["crit"], layer="below", line_width=0)
     fig.add_shape(type="rect", x0=2.5, y0=CLIN_THRESH["MAP_TARGET"], x1=6.0, y1=180, fillcolor=PLOT_THEME["ok"], layer="below", line_width=0)
     
     if len(window)>0:
-        fig.add_trace(go.Scatter(x=window["CI"], y=window["MAP"], mode="lines", line=dict(color="#555", dash="dot"), name="history"))
-    fig.add_trace(go.Scatter(x=[cur["CI"]], y=[cur["MAP"]], mode="markers", marker=dict(color="white", size=12, symbol="x"), name="current"))
+        fig.add_trace(go.Scatter(x=window["CI"], y=window["MAP"], mode="lines", line=dict(color="#94a3b8", dash="dot"), name="history"))
+    fig.add_trace(go.Scatter(x=[cur["CI"]], y=[cur["MAP"]], mode="markers", marker=dict(color="#0f172a", size=12, symbol="x"), name="current"))
     
-    # predicted endpoints
+    # Predicted endpoints
     for label, key, color in [("fluid","fluid",PLOT_THEME["ci"]), ("press","press",PLOT_THEME["map"]), ("inot","inot",PLOT_THEME["do2"])]:
         val_map = float(preds[key]["MAP"][-1])
         base_ci = float(max(0.2, cur["CI"]))
@@ -339,8 +372,8 @@ def predictive_compass(df: pd.DataFrame, preds: Dict[str, Any], curr_idx: int) -
         fig.add_annotation(x=base_ci+dx, y=val_map, ax=cur["CI"], ay=cur["MAP"], showarrow=True, arrowhead=2, arrowcolor=color, text=label.upper(), font=dict(color=color))
     
     _base_layout(fig, height=340, title="<b>Predictive Compass</b>")
-    fig.update_xaxes(title_text="CI (L/min/m²)", range=[0.5,6.0])
-    fig.update_yaxes(title_text="MAP (mmHg)", range=[30,160])
+    fig.update_xaxes(title_text="CI (L/min/m²)", range=[0.5,6.0], gridcolor=PLOT_THEME["grid"])
+    fig.update_yaxes(title_text="MAP (mmHg)", range=[30,160], gridcolor=PLOT_THEME["grid"])
     fig.update_layout(showlegend=False)
     return fig
 
@@ -348,14 +381,14 @@ def multi_scenario_horizon(preds: Dict[str, Any]) -> go.Figure:
     h = len(preds["time"])
     t = np.arange(h)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=t, y=preds["nat"]["MAP"], line=dict(color="#666", dash="dot"), name="natural"))
+    fig.add_trace(go.Scatter(x=t, y=preds["nat"]["MAP"], line=dict(color="#94a3b8", dash="dot"), name="natural"))
     fig.add_trace(go.Scatter(x=t, y=preds["fluid"]["MAP"], line=dict(color=PLOT_THEME["ci"]), name="fluid"))
     fig.add_trace(go.Scatter(x=t, y=preds["press"]["MAP"], line=dict(color=PLOT_THEME["map"]), name="pressor"))
     fig.add_trace(go.Scatter(x=t, y=preds["inot"]["MAP"], line=dict(color=PLOT_THEME["do2"]), name="inotrope"))
-    fig.add_hline(y=CLIN_THRESH["MAP_TARGET"], line_color="red", line_dash="dot")
+    fig.add_hline(y=CLIN_THRESH["MAP_TARGET"], line_color=PLOT_THEME["crit"], line_dash="dot")
     _base_layout(fig, height=300, title="<b>Intervention Horizon - MAP</b>")
-    fig.update_xaxes(title_text="Minutes ahead")
-    fig.update_yaxes(title_text="MAP (mmHg)")
+    fig.update_xaxes(title_text="Minutes ahead", gridcolor=PLOT_THEME["grid"])
+    fig.update_yaxes(title_text="MAP (mmHg)", gridcolor=PLOT_THEME["grid"])
     return fig
 
 def organ_radar(df: pd.DataFrame, curr_idx: int) -> go.Figure:
@@ -368,14 +401,14 @@ def organ_radar(df: pd.DataFrame, curr_idx: int) -> go.Figure:
     theta = ["Renal","Cardiac","Metabolic","Perfusion","Renal"]
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(r=[0.2]*5, theta=theta, fill="toself", fillcolor=PLOT_THEME["ok"], line=dict(width=0)))
-    fig.add_trace(go.Scatterpolar(r=R, theta=theta, fill="toself", fillcolor=PLOT_THEME["crit"], line=dict(color="red", width=2)))
+    fig.add_trace(go.Scatterpolar(r=R, theta=theta, fill="toself", fillcolor=PLOT_THEME["crit"], line=dict(color=PLOT_THEME["map"], width=2)))
     _base_layout(fig, height=280, title="<b>Organ Risk Topology</b>")
-    fig.update_polars(radialaxis=dict(visible=False, range=[0,1]))
+    fig.update_polars(radialaxis=dict(visible=False, range=[0,1]), bgcolor="rgba(0,0,0,0)")
     fig.update_layout(showlegend=False)
     return fig
 
 # ==========================================
-# 6. APP MAIN (Formerly app.py)
+# 6. APP MAIN
 # ==========================================
 
 # Apply Styling
@@ -430,23 +463,23 @@ def compute_header(row):
 status, action, color, rationale = compute_header(row)
 
 # Render UI
-st.markdown(f"<div class='alert-header' style='border-color:{color}'><div style='font-size:1.1rem;font-weight:800;color:{color}'>{status}</div><div style='font-weight:700;color:#dde'>ACTION: {action}</div></div>", unsafe_allow_html=True)
+st.markdown(f"<div class='alert-header' style='border-color:{color}'><div style='font-size:1.1rem;font-weight:800;color:{color}'>{status}</div><div style='font-weight:700;color:var(--text)'>ACTION: {action}</div></div>", unsafe_allow_html=True)
 st.markdown(f"<div class='small'>{rationale}</div>", unsafe_allow_html=True)
 
 # KPI Row
 k1, k2, k3, k4, k5, k6 = st.columns(6, gap="small")
-def kpi_viz(col, label, val, unit, color, dfcol, low, high):
+def kpi_viz(col, label, val, unit, color, dfcol, low, high, viz_key):
     with col:
-        st.markdown(f"<div class='titan-card' style='border-top:3px solid {color}'><div class='kpi-lbl'>{label}</div><div class='kpi-val' style='color:{color}'>{val}<span style='font-size:0.72rem;color:#bbb'> {unit}</span></div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='titan-card' style='border-top:3px solid {color}'><div class='kpi-lbl'>{label}</div><div class='kpi-val' style='color:{color}'>{val}<span style='font-size:0.72rem;color:var(--muted)'> {unit}</span></div></div>", unsafe_allow_html=True)
         fig = sparkline(df, dfcol, color, low, high)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=viz_key)
 
-kpi_viz(k1, "MAP", f"{row['MAP']:.0f}", "mmHg", PLOT_THEME["map"], "MAP", 55, 110)
-kpi_viz(k2, "CI", f"{row['CI']:.2f}", "L/min/m²", PLOT_THEME["ci"], "CI", 1.0, 4.5)
-kpi_viz(k3, "SVR", f"{row['SVRI']:.0f}", "dyn", PLOT_THEME["svr"], "SVRI", 400, 1400)
-kpi_viz(k4, "SV", f"{row['SV']:.0f}", "mL", PLOT_THEME["ci"], "SV", 30, 120)
-kpi_viz(k5, "Lactate", f"{row['Lactate']:.2f}", "mmol/L", PLOT_THEME["do2"], "Lactate", 0.4, 6.0)
-kpi_viz(k6, "Entropy", f"{row['Entropy']:.2f}", "σ", "#ffffff", "Entropy", 0.0, 2.0)
+kpi_viz(k1, "MAP", f"{row['MAP']:.0f}", "mmHg", PLOT_THEME["map"], "MAP", 55, 110, "k1")
+kpi_viz(k2, "CI", f"{row['CI']:.2f}", "L/min/m²", PLOT_THEME["ci"], "CI", 1.0, 4.5, "k2")
+kpi_viz(k3, "SVR", f"{row['SVRI']:.0f}", "dyn", PLOT_THEME["svr"], "SVRI", 400, 1400, "k3")
+kpi_viz(k4, "SV", f"{row['SV']:.0f}", "mL", PLOT_THEME["ci"], "SV", 30, 120, "k4")
+kpi_viz(k5, "Lactate", f"{row['Lactate']:.2f}", "mmol/L", PLOT_THEME["do2"], "Lactate", 0.4, 6.0, "k5")
+kpi_viz(k6, "Entropy", f"{row['Entropy']:.2f}", "σ", "#64748b", "Entropy", 0.0, 2.0, "k6")
 
 # Predictive Panels
 st.markdown('<div class="section-header">🔮 Predictive Hemodynamics & Forecasts</div>', unsafe_allow_html=True)
@@ -454,29 +487,29 @@ left, right = st.columns((1,1), gap="large")
 with left:
     st.markdown("<div class='titan-card'>", unsafe_allow_html=True)
     fig_c = predictive_compass(df, preds, idx)
-    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False}, key="p_compass")
     st.markdown("</div>", unsafe_allow_html=True)
 with right:
     st.markdown("<div class='titan-card'>", unsafe_allow_html=True)
     fig_m = multi_scenario_horizon(preds)
-    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(fig_m, use_container_width=True, config={"displayModeBar": False}, key="p_horizon")
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Organ Risk Panels
 st.markdown('<div class="section-header">🫀 Organ Mechanics & Risk</div>', unsafe_allow_html=True)
 c1, c2, c3, c4 = st.columns(4, gap="large")
 with c1:
-    st.plotly_chart(organ_radar(df, idx), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(organ_radar(df, idx), use_container_width=True, config={"displayModeBar": False}, key="o_radar")
 with c2:
-    st.plotly_chart(sparkline(df, "SV", PLOT_THEME["ci"], 30, 120), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(sparkline(df, "SV", PLOT_THEME["ci"], 30, 120), use_container_width=True, config={"displayModeBar": False}, key="o_sv")
 with c3:
-    st.plotly_chart(sparkline(df, "DO2", PLOT_THEME["do2"], 200, 700), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(sparkline(df, "DO2", PLOT_THEME["do2"], 200, 700), use_container_width=True, config={"displayModeBar": False}, key="o_do2")
 with c4:
-    st.plotly_chart(sparkline(df, "Urine", "#ffffff", 0.0, 2.0), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(sparkline(df, "Urine", "#64748b", 0.0, 2.0), use_container_width=True, config={"displayModeBar": False}, key="o_urine")
 
 # Action Plan
 st.markdown('<div class="section-header">🩺 Suggested Actions (Prioritized)</div>', unsafe_allow_html=True)
-for p in plan:
+for i, p in enumerate(plan):
     pr = p["priority"].upper()
     color = "var(--danger)" if pr=="CRITICAL" else "var(--warn)" if pr=="HIGH" else "var(--text)"
     st.markdown(f"- <strong style='color:{color}'>{pr}</strong> — {p['action']}  \n  _{p['rationale']}_", unsafe_allow_html=True)
