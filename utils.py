@@ -37,11 +37,9 @@ def simulate_shock_progression(mins=720):
     pi = 4.5 + bio_noise(mins, 0.5)
     
     # --- CLINICAL SCENARIO: Progressive "Cold" Shock ---
-    # (e.g., Late Hypovolemia or Cardiogenic Decompensation)
     # Characterized by: Rising HR, Narrowing Pulse Pressure, Dropping PI.
     
     start = 240
-    end = 720
     
     # 1. Stroke Volume Fails (Pulse Pressure Narrows)
     # SBP drops, but DBP is maintained initially by vasoconstriction
@@ -85,16 +83,11 @@ def plot_prognostic_horizon(df, curr_time):
     """
     VISUALIZATION 1: The "Time-to-Crash" Horizon.
     Combines Kalman-filtered history with a Linear Regression projection.
-    
-    Value: Tells the clinician HOW MUCH TIME they have before MAP < 65.
     """
     start = max(0, curr_time - 180)
     data = df.iloc[start:curr_time]
     
-    # A. Kalman Filter (Simulated via rolling mean for stability in this demo)
-    kalman = data['Obs_HR'].rolling(5).mean() # In prod, use the Class implementation
-    
-    # B. Prognostic Projection (MAP)
+    # Prognostic Projection (MAP)
     # Fit regression on last 30 mins
     recent_map = data['MAP'].iloc[-30:].values
     X = np.arange(len(recent_map)).reshape(-1, 1)
@@ -158,11 +151,6 @@ def plot_shock_phenotype(df, curr_time):
     """
     VISUALIZATION 2: The "Shock Quadrants" (Diagnostic).
     Plots Pulse Pressure (Stroke Volume Proxy) vs Shock Index (Instability).
-    
-    Value: Differentiates the TYPE of shock.
-    - Top Left: Stable.
-    - Bottom Left: Hypovolemic/Cardiogenic (Low Output, Narrow PP).
-    - Bottom Right: Severe Decompensation (Pre-Arrest).
     """
     start = max(0, curr_time - 120)
     data = df.iloc[start:curr_time]
@@ -213,8 +201,6 @@ def plot_autonomic_strip(df, curr_time):
     """
     VISUALIZATION 3: Autonomic & Micro-circulatory Reserve.
     Combines Entropy (Nerves) and PI (Vessels).
-    
-    Value: Early Warning System. Drops here often precede BP changes by 30 mins.
     """
     start = max(0, curr_time - 180)
     data = df.iloc[start:curr_time]
