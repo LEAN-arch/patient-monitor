@@ -4,165 +4,167 @@ import numpy as np
 import utils
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="PANOPTICON | ICU", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="PRECISION | GDT", layout="wide", initial_sidebar_state="collapsed")
 
-# --- CSS: DENSE GRID LAYOUT ---
+# --- CSS: CLINICAL DASHBOARD ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f1f5f9; }
+    .stApp { background-color: #f8fafc; }
     
-    /* Card Container */
-    .pan-card {
+    /* Tiles */
+    .metric-tile {
         background: white;
         border: 1px solid #e2e8f0;
         border-radius: 6px;
-        padding: 12px;
+        padding: 10px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        height: 100%;
+        text-align: center;
     }
+    .tile-label { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+    .tile-val { font-size: 1.8rem; font-weight: 800; color: #0f172a; line-height: 1.1; }
+    .tile-unit { font-size: 0.8rem; color: #94a3b8; }
+    .tile-context { font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
     
-    /* Headers */
-    .pan-header { font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px solid #f1f5f9; padding-bottom: 4px; }
+    /* Context Colors */
+    .c-crit { color: #ef4444; }
+    .c-warn { color: #d97706; }
+    .c-ok { color: #10b981; }
     
-    /* Sparkline Row */
-    .spark-box { text-align: center; border-right: 1px solid #f1f5f9; padding: 0 10px; }
-    .spark-val { font-size: 1.6rem; font-weight: 800; color: #0f172a; line-height: 1; }
-    .spark-label { font-size: 0.7rem; color: #94a3b8; font-weight: 600; }
-    
-    /* Status Badges */
-    .badge { padding: 3px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
-    .b-crit { background: #fee2e2; color: #991b1b; }
-    .b-warn { background: #fef3c7; color: #92400e; }
-    .b-ok { background: #dcfce7; color: #166534; }
-    
+    /* Header */
+    .protocol-header {
+        background: #1e293b;
+        color: white;
+        padding: 10px 20px;
+        border-radius: 6px;
+        margin-bottom: 15px;
+        display: flex;
+        justify_content: space-between;
+        align-items: center;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOAD DATA ---
+# --- LOAD ---
 @st.cache_data
-def load_data(): return utils.simulate_panopticon_data()
-df = load_data()
+def load(): return utils.simulate_gdt_data()
+df = load()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("Timeline")
-    curr_time = st.slider("Min", 200, 720, 720)
-    st.info("Scenario: Distributive Shock (Sepsis)")
+    st.header("Simulation Control")
+    curr_time = st.slider("Time (min)", 200, 720, 720)
+    st.info("Scenario: Warm Sepsis -> Cold Shock")
 
 # --- CALC ---
 cur = df.iloc[curr_time-1]
 prv = df.iloc[curr_time-15]
 
-# --- 1. HEADER (HUD) ---
-c1, c2, c3 = st.columns([2, 5, 1])
-with c1:
-    st.markdown("### 👁️ PANOPTICON")
-    st.caption("Advanced Physiological Telemetry")
-with c3:
-    risk = int(cur['HR']/cur['MAP'] * 100)
-    st.markdown(f"<div style='text-align:right; font-weight:bold; font-size:1.5rem; color:{'red' if risk>100 else 'green'}'>RISK: {risk}</div>", unsafe_allow_html=True)
+# --- 1. PROTOCOL HEADER ---
+# Heuristic Logic
+status = "STABLE"
+action = "MONITOR"
+bg_col = "#10b981" # Green
 
-# --- 2. ROW 1: SPARKLINE KPI STRIP (All key vitals) ---
-st.markdown('<div class="pan-card" style="margin-bottom:15px; padding: 5px;">', unsafe_allow_html=True)
-sp_cols = st.columns(6)
+if cur['Lactate'] > 2.0:
+    status = "TISSUE HYPOXIA"
+    action = "CHECK DO2 TARGETS"
+    bg_col = "#d97706" # Orange
 
-def spark_kpi(col, label, val, unit, color_hex, df_col):
-    with col:
-        st.markdown(f"<div class='spark-box'><div class='spark-label'>{label}</div><div class='spark-val' style='color:{color_hex}'>{val}</div><div class='spark-label'>{unit}</div></div>", unsafe_allow_html=True)
-        fig = utils.plot_sparkline(df, df_col, color_hex)
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+if cur['MAP'] < 65:
+    status = "CIRCULATORY FAILURE"
+    if cur['CI'] > 2.5:
+        action = "START VASOPRESSORS (Septic)"
+    else:
+        action = "FLUIDS / INOTROPES"
+    bg_col = "#ef4444" # Red
 
-spark_kpi(sp_cols[0], "HEART RATE", int(cur['HR']), "bpm", "#0369a1", "HR")
-spark_kpi(sp_cols[1], "MAP", int(cur['MAP']), "mmHg", "#be185d", "MAP")
-spark_kpi(sp_cols[2], "CARDIAC OUTPUT", f"{cur['CO']:.1f}", "L/min", "#059669", "CO")
-spark_kpi(sp_cols[3], "SVR", int(cur['SVR']), "dyn", "#d97706", "SVR")
-spark_kpi(sp_cols[4], "SpO2", int(cur['SpO2']), "%", "#7c3aed", "SpO2")
-spark_kpi(sp_cols[5], "LACTATE", f"{cur['Lactate']:.1f}", "mmol/L", "#dc2626", "Lactate")
-st.markdown('</div>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="protocol-header" style="background:{bg_col}">
+    <div><strong>STATUS:</strong> {status}</div>
+    <div><strong>ACTION:</strong> {action}</div>
+</div>
+""", unsafe_allow_html=True)
 
-# --- 3. ROW 2: PRIMARY MONITORS & DIAGNOSTICS ---
-r2_1, r2_2, r2_3 = st.columns([2, 1, 1])
+# --- 2. RESUSCITATION TARGETS (KPIs) ---
+cols = st.columns(6)
 
-with r2_1:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">1. HEMODYNAMIC COMMAND (HR vs MAP)</div>', unsafe_allow_html=True)
-    fig_cmd = utils.plot_command_center(df, curr_time)
-    st.plotly_chart(fig_cmd, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r2_2:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">2. OXYGEN SUPPLY/DEMAND</div>', unsafe_allow_html=True)
-    fig_do2 = utils.plot_oxygen_delivery(df, curr_time)
-    st.plotly_chart(fig_do2, use_container_width=True)
-    st.caption("Gap = Oxygen Debt (Lactate)")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r2_3:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">3. RENAL PERFUSION</div>', unsafe_allow_html=True)
-    fig_ren = utils.plot_renal_curve(df, curr_time)
-    st.plotly_chart(fig_ren, use_container_width=True)
-    st.caption("Left of Red Line = Acute Kidney Injury")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# --- 4. ROW 3: MECHANICS & PHYSICS ---
-r3_1, r3_2, r3_3, r3_4 = st.columns(4)
-
-with r3_1:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">4. STARLING (PRELOAD)</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_starling(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_2:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">5. V-A COUPLING</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_svr_co(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_3:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">6. WORK LOOP (PV)</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_pv_proxy(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r3_4:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">7. HEMO-COHERENCE</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_coherence(df, curr_time), use_container_width=True)
-    st.caption("Red = Uncoupling (Instability)")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# --- 5. ROW 4: ADVANCED COMPUTATIONAL ---
-r4_1, r4_2 = st.columns([1, 3])
-
-with r4_1:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">8. AUTONOMIC SPECTRUM</div>', unsafe_allow_html=True)
-    st.plotly_chart(utils.plot_spectral_density(df, curr_time), use_container_width=True)
-    st.caption("Low Power = Autonomic Failure")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with r4_2:
-    st.markdown('<div class="pan-card">', unsafe_allow_html=True)
-    st.markdown('<div class="pan-header">AI SUMMARY & PROTOCOL</div>', unsafe_allow_html=True)
+def tile(col, label, val, unit, delta, target_val, invert=False, target_range=None):
+    is_bad = val < target_range[0] if target_range else (val > target_val if invert else val < target_val)
+    color = "c-crit" if is_bad else "c-ok"
     
-    # Logic Engine
-    dx = "STABLE"
-    plan = "Monitor"
-    if cur['Lactate'] > 4.0:
-        dx = "SEVERE SEPTIC SHOCK"
-        plan = "1. FLUIDS (30mL/kg) 2. NOREPINEPHRINE 3. ANTIBIOTICS"
-    elif cur['SVR'] < 800:
-        dx = "DISTRIBUTIVE SHOCK (Early)"
-        plan = "PRESSORS (Target MAP > 65)"
-        
-    st.markdown(f"#### DIAGNOSIS: <span class='badge b-crit'>{dx}</span>", unsafe_allow_html=True)
-    st.markdown(f"**PROTOCOL:** {plan}")
-    st.markdown(f"""
-    - **Renal Status:** {'Oliguric (<0.5 mL/kg/hr)' if cur['UrineOutput'] < 0.5 else 'Adequate'}
-    - **O2 Supply/Demand:** {'Mismatch (High Lactate)' if cur['Lactate'] > 2 else 'Balanced'}
-    - **Coupling:** {'Vasodilation Dominant' if cur['SVR'] < 800 else 'Normal'}
-    """)
-    st.markdown('</div>', unsafe_allow_html=True)
+    col.markdown(f"""
+    <div class="metric-tile">
+        <div class="tile-label">{label}</div>
+        <div class="tile-val">{val}</div>
+        <div class="tile-unit">{unit}</div>
+        <div class="tile-context {color}">{delta}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# 1. MAP
+d_map = cur['MAP'] - prv['MAP']
+tile(cols[0], "MAP (Pressure)", f"{cur['MAP']:.0f}", "mmHg", f"{d_map:+.0f}", 65)
+
+# 2. CI
+d_ci = cur['CI'] - prv['CI']
+tile(cols[1], "Cardiac Index", f"{cur['CI']:.1f}", "L/min/m2", f"{d_ci:+.1f}", 2.5)
+
+# 3. SVRI
+d_svr = cur['SVRI'] - prv['SVRI']
+tile(cols[2], "SVRI (Resist)", f"{cur['SVRI']:.0f}", "dyn", f"{d_svr:+.0f}", 800)
+
+# 4. DO2I
+d_do2 = cur['DO2I'] - prv['DO2I']
+tile(cols[3], "DO2I (Delivery)", f"{cur['DO2I']:.0f}", "mL/m2", f"{d_do2:+.0f}", 400)
+
+# 5. Lactate
+d_lac = cur['Lactate'] - prv['Lactate']
+tile(cols[4], "Lactate", f"{cur['Lactate']:.1f}", "mmol/L", f"{d_lac:+.1f}", 2.0, invert=True)
+
+# 6. Urine
+tile(cols[5], "Urine Output", f"{cur['Urine']:.1f}", "mL/kg/hr", "Oliguric" if cur['Urine']<0.5 else "Adequate", 0.5)
+
+# --- 3. ROW 1: MACRO-HEMODYNAMICS (The "Bullseye") ---
+c_left, c_right = st.columns([1, 1])
+
+with c_left:
+    st.markdown("**1. HEMODYNAMIC TARGETING**")
+    st.caption("Identify Shock Type: High Flow/Low Pressure vs Low Flow/Low Pressure.")
+    fig_bull = utils.plot_hemodynamic_bullseye(df, curr_time)
+    st.plotly_chart(fig_bull, use_container_width=True)
+
+with c_right:
+    st.markdown("**2. OXYGEN SUPPLY VS DEMAND**")
+    st.caption("The root cause of shock. Ensure Delivery (Green) > Debt (Red).")
+    fig_ox = utils.plot_oxygen_ledger(df, curr_time)
+    st.plotly_chart(fig_ox, use_container_width=True)
+
+# --- 4. ROW 2: ORGAN PROTECTION & MECHANICS ---
+c3, c4, c5 = st.columns(3)
+
+with c3:
+    st.markdown("**3. RENAL TRAJECTORY**")
+    st.caption("Preventing AKI.")
+    fig_ren = utils.plot_renal_trajectory(df, curr_time)
+    st.plotly_chart(fig_ren, use_container_width=True)
+
+with c4:
+    st.markdown("**4. FLUID RESPONSIVENESS**")
+    st.caption("Frank-Starling Vector.")
+    fig_star = utils.plot_frank_starling_vector(df, curr_time)
+    st.plotly_chart(fig_star, use_container_width=True)
+
+with c5:
+    st.markdown("**5. AUTONOMIC STRESS**")
+    st.caption("Spectral Analysis (PSD).")
+    fig_auto = utils.plot_autonomic_psd(df, curr_time)
+    st.plotly_chart(fig_auto, use_container_width=True)
+
+# --- 5. TEXT SUMMARY ---
+st.info(f"""
+**CLINICAL SUMMARY (T={curr_time}):**
+The patient demonstrates **{'Hyperdynamic' if cur['CI'] > 3.0 else 'Hypodynamic'}** physiology. 
+{'SVR is Critically Low (Vasoplegia)' if cur['SVRI'] < 800 else 'SVR is maintained'}.
+Lactate is {'Rising (Metabolic Failure)' if d_lac > 0 else 'Stable'}.
+**Priority:** {'Restore Perfusion Pressure (Vasopressors)' if cur['MAP'] < 65 else 'Optimize Flow'}.
+""")
