@@ -123,4 +123,16 @@ with c_left:
     # 1. Prognosis
     fig_prog = utils.plot_prognostic_horizon(df, curr_time)
     st.plotly_chart(fig_prog, use_container_width=True)
-    st.caption("ℹ️ **Action:** Projecting MAP trends to estimate 'Time to Crash'. Prepare vasopressors if trajectory intersects Red Lin
+    st.caption("ℹ️ **Action:** Projecting MAP trends to estimate 'Time to Crash'. Prepare vasopressors if trajectory intersects Red Line.")
+
+with c_mid:
+    # 2. Diagnosis
+    fig_pheno = utils.plot_shock_phenotype(df, curr_time)
+    st.plotly_chart(fig_pheno, use_container_width=True)
+    st.caption("ℹ️ **Diagnosis:** Movement into Orange/Red zones indicates low stroke volume compensation. Consider fluid challenge.")
+
+with c_right:
+    # 3. Early Warning
+    fig_auto = utils.plot_autonomic_strip(df, curr_time)
+    st.plotly_chart(fig_auto, use_container_width=True)
+    st.caption("ℹ️ **Early Warning:** Drop in Entropy + PI indicates autonomic stress response *before* BP drops.")
