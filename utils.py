@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
 from sklearn.linear_model import LinearRegression
 from scipy.signal import welch
@@ -20,7 +19,18 @@ THEME = {
     'metabolic': '#dc2626' # Red
 }
 
-# --- 2. EXPANDED SIMULATION ---
+# --- 2. HELPER FUNCTIONS ---
+def hex_to_rgba(hex_color, opacity=0.1):
+    """Converts hex code to rgba string with opacity."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return f"rgba({r},{g},{b},{opacity})"
+    return hex_color
+
+# --- 3. EXPANDED SIMULATION ---
 def simulate_panopticon_data(mins=720):
     t = np.arange(mins)
     
@@ -35,8 +45,6 @@ def simulate_panopticon_data(mins=720):
     spo2 = 98 + noise(mins, 0.5)
     
     # SCENARIO: Septic Shock (Distributive)
-    # 1. Vasodilation (SVR Drops) -> 2. HR Compels -> 3. Tissue Hypoxia (Lactate) -> 4. Renal Hit
-    
     start = 200
     
     # Pathophysiology
@@ -66,7 +74,6 @@ def simulate_panopticon_data(mins=720):
     df['UrineOutput'].iloc[start:] = np.maximum(0.1, 1.0 - uo_drop)
     
     # Oxygen Delivery (DO2) Proxy
-    # DO2 = CO * Hb * SpO2 * 1.34
     df['DO2'] = df['CO'] * 13 * (df['SpO2']/100) * 1.34
     
     # Entropy (Neuro)
@@ -77,14 +84,17 @@ def simulate_panopticon_data(mins=720):
     
     return df
 
-# --- 3. VISUALIZATION LIBRARY ---
+# --- 4. VISUALIZATION LIBRARY ---
 
-# A. SPARKLINE GENERATOR (For Top Row)
+# A. SPARKLINE GENERATOR (Fixed)
 def plot_sparkline(df, col, color):
     data = df[col].iloc[-60:]
+    fill_color = hex_to_rgba(color, 0.1) # Proper conversion
+    
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data.index, y=data.values, mode='lines', 
-                             line=dict(color=color, width=2), fill='tozeroy', fillcolor=f"rgba{color[3:-1]}, 0.1)"))
+                             line=dict(color=color, width=2), fill='tozeroy', 
+                             fillcolor=fill_color))
     fig.update_layout(template="plotly_white", height=60, margin=dict(l=0,r=0,t=0,b=0), 
                       xaxis=dict(visible=False), yaxis=dict(visible=False))
     return fig
