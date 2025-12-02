@@ -4,145 +4,161 @@ import numpy as np
 import utils
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="CDS | Hemodynamic AI", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="NEXUS | ICU", layout="wide", initial_sidebar_state="collapsed")
 
-# --- MEDICAL UI CSS ---
+# --- FUTURISTIC CSS ---
 st.markdown("""
 <style>
-    .stApp { background-color: #f8fafc; }
+    /* Dark Matter Theme */
+    .stApp { background-color: #050505; color: #e2e8f0; }
     
-    /* The "Vital Card" */
-    .vital-card {
-        background-color: white;
-        border-left: 5px solid #e5e7eb;
-        padding: 15px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        margin-bottom: 10px;
-    }
-    .vital-label { font-size: 0.75rem; font-weight: 700; color: #6b7280; text-transform: uppercase; }
-    .vital-value { font-size: 2rem; font-weight: 800; color: #111827; line-height: 1.1; }
-    .vital-unit { font-size: 1rem; color: #9ca3af; font-weight: 500; }
-    .vital-delta { font-size: 0.85rem; font-weight: 600; margin-top: 5px; }
-    
-    /* Status Colors */
-    .status-crit { border-left-color: #ef4444 !important; }
-    .status-warn { border-left-color: #f59e0b !important; }
-    .status-ok { border-left-color: #10b981 !important; }
-    .txt-crit { color: #ef4444; }
-    .txt-ok { color: #10b981; }
-    
-    /* Diagnosis Box */
-    .dx-box {
-        background-color: #eff6ff;
-        border: 1px solid #bfdbfe;
-        padding: 15px;
+    /* Neon Cards */
+    .nexus-card {
+        background: rgba(20, 20, 30, 0.6);
+        border: 1px solid rgba(100, 100, 100, 0.2);
         border-radius: 8px;
-        color: #1e40af;
-        font-weight: 500;
-        text-align: center;
+        padding: 20px;
+        backdrop-filter: blur(10px);
+        box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        margin-bottom: 20px;
+        transition: all 0.3s ease;
     }
+    .nexus-card:hover {
+        border-color: rgba(0, 242, 234, 0.5);
+        box-shadow: 0 0 15px rgba(0, 242, 234, 0.2);
+    }
+    
+    /* Typography */
+    .label-xs { font-size: 0.7rem; color: #94a3b8; letter-spacing: 1.5px; text-transform: uppercase; }
+    .val-xl { font-size: 2.5rem; font-weight: 200; font-family: 'Courier New', monospace; color: white; text-shadow: 0 0 10px rgba(255,255,255,0.3); }
+    .unit { font-size: 0.9rem; color: #64748b; }
+    
+    /* Status Dots */
+    .dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+    .dot-ok { background-color: #ccff00; box-shadow: 0 0 8px #ccff00; }
+    .dot-warn { background-color: #ffae00; box-shadow: 0 0 8px #ffae00; }
+    .dot-crit { background-color: #ff0055; box-shadow: 0 0 8px #ff0055; }
+    
+    /* Tabs styling override */
+    .stTabs [data-baseweb="tab-list"] { gap: 10px; background-color: transparent; }
+    .stTabs [data-baseweb="tab"] { background-color: rgba(255,255,255,0.05); border-radius: 4px; border: none; color: white; }
+    .stTabs [aria-selected="true"] { background-color: rgba(0, 242, 234, 0.1) !important; color: #00f2ea !important; border: 1px solid #00f2ea !important; }
+
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOAD DATA ---
+# --- LOAD ENGINE ---
 @st.cache_data
-def get_data(): return utils.simulate_shock_progression()
-df = get_data()
+def load_nexus(): return utils.simulate_comprehensive_shock()
+df = load_nexus()
 
-# --- SIDEBAR ---
+# --- SIDEBAR CONTROL ---
 with st.sidebar:
-    st.header("Simulation Timeline")
-    curr_time = st.slider("Time (min)", 200, 720, 720)
+    st.title("NEXUS CONTROL")
+    curr_time = st.slider("Timeline Sync", 200, 720, 720)
     st.markdown("---")
-    st.info("**Instructions:** Move slider to T=500 to see 'Compensated Shock' (Narrow PP, Low PI). Move to T=650 to see Decompensation.")
+    st.info("System: Hypovolemic -> Cardiogenic Cascade")
 
-# --- ANALYTICS ENGINE ---
+# --- CALC ---
 current = df.iloc[curr_time-1]
 prev = df.iloc[curr_time-15]
 
-# Hemodynamic Logic
-pp = current['PP']
-si = current['SI']
-map_val = current['MAP']
+# --- TOP BAR (HUD) ---
+c1, c2, c3, c4, c5 = st.columns(5)
 
-# Diagnosis Logic
-dx_status = "STABLE"
-if pp < 35 and si > 0.8:
-    dx_status = "COMPENSATED SHOCK (Low Stroke Volume)"
-if map_val < 65:
-    dx_status = "DECOMPENSATED SHOCK (Hypotension)"
-
-# --- HEADER ---
-c1, c2 = st.columns([3, 1])
-with c1:
-    st.title("Hemodynamic CDS")
-    st.markdown(f"**AI Assessment:** <span class='dx-box'>{dx_status}</span>", unsafe_allow_html=True)
-with c2:
-    risk_score = min(100, int((si * 40) + (60 - pp)))
-    st.metric("Instability Index", f"{risk_score}/100", "High" if risk_score > 50 else "Low", delta_color="inverse")
-
-st.markdown("---")
-
-# --- ROW 1: PRIMARY VITALS (The "What") ---
-col1, col2, col3, col4 = st.columns(4)
-
-def vital_box(col, label, val, unit, delta, threshold, invert=False, fmt="{:.0f}"):
-    """
-    Displays a vital sign card.
-    Args:
-        val (float/int): The raw numeric value (for logic check).
-        fmt (str): Format string for display (e.g., "{:.1f}").
-    """
-    # Logic Check (Using raw number)
-    is_bad = val < threshold if not invert else val > threshold
-    
-    # Visual Formatting
-    status = "status-crit" if is_bad else "status-ok"
-    delta_color = "txt-crit" if is_bad else "txt-ok"
-    display_val = fmt.format(val)
-    
+def hud_metric(col, label, val, unit, delta, color_class="dot-ok"):
     col.markdown(f"""
-    <div class="vital-card {status}">
-        <div class="vital-label">{label}</div>
-        <div class="vital-value">{display_val} <span class="vital-unit">{unit}</span></div>
-        <div class="vital-delta {delta_color}">{delta}</div>
+    <div class="nexus-card" style="padding: 15px; text-align: center;">
+        <div class="label-xs"><span class="dot {color_class}"></span>{label}</div>
+        <div class="val-xl">{val}</div>
+        <div class="unit">{unit}</div>
+        <div style="font-size: 0.8rem; color: #64748b; margin-top:5px;">{delta}</div>
     </div>
     """, unsafe_allow_html=True)
 
-# 1. MAP (Perfusion)
-d_map = map_val - prev['MAP']
-vital_box(col1, "Mean Art. Pressure", map_val, "mmHg", f"{d_map:+.0f}", 65, fmt="{:.0f}")
+# 1. MAP
+d_map = current['MAP'] - prev['MAP']
+status_map = "dot-crit" if current['MAP'] < 65 else "dot-ok"
+hud_metric(c1, "Mean Pressure", f"{int(current['MAP'])}", "mmHg", f"{d_map:+.0f}", status_map)
 
-# 2. Pulse Pressure (Stroke Volume)
-d_pp = pp - prev['PP']
-vital_box(col2, "Pulse Pressure", pp, "mmHg", f"{d_pp:+.0f} (Narrowing)" if d_pp < -2 else "Stable", 30, fmt="{:.0f}")
+# 2. Cardiac Output
+d_co = current['CO'] - prev['CO']
+status_co = "dot-crit" if current['CO'] < 4.0 else "dot-ok"
+hud_metric(c2, "Cardiac Output", f"{current['CO']:.1f}", "L/min", f"{d_co:+.1f}", status_co)
 
-# 3. Shock Index (Stability)
-d_si = si - prev['SI']
-vital_box(col3, "Shock Index", si, "", f"{d_si:+.2f}", 0.9, invert=True, fmt="{:.2f}")
+# 3. SVR
+d_svr = current['SVR'] - prev['SVR']
+hud_metric(c3, "Vasc. Resistance", f"{int(current['SVR'])}", "dyn", f"{d_svr:+.0f}")
 
-# 4. Perfusion Index (Micro-circ)
-pi = current['PI']
-vital_box(col4, "Perfusion Index", pi, "%", "Vasoconstriction" if pi < 1.0 else "Normal", 1.0, fmt="{:.1f}")
+# 4. Stroke Volume (PP)
+d_pp = current['PP'] - prev['PP']
+status_pp = "dot-crit" if current['PP'] < 30 else "dot-warn"
+hud_metric(c4, "Stroke Volume Proxy", f"{int(current['PP'])}", "mL/beat", f"{d_pp:+.0f}", status_pp)
+
+# 5. Instability (SI)
+si = current['SI']
+status_si = "dot-crit" if si > 1.0 else "dot-ok"
+hud_metric(c5, "Shock Index", f"{si:.2f}", "", "Stable" if si < 0.8 else "Unstable", status_si)
 
 
-# --- ROW 2: CLINICAL DECISION SUPPORT (The "Why" & "When") ---
-c_left, c_mid, c_right = st.columns([1.5, 1, 1])
+# --- MAIN INTERFACE (TABS) ---
+tab_hemo, tab_phys, tab_organ = st.tabs(["1. HEMODYNAMICS", "2. FLUID PHYSICS", "3. ORGAN SYSTEMS"])
 
-with c_left:
-    # 1. Prognosis
-    fig_prog = utils.plot_prognostic_horizon(df, curr_time)
-    st.plotly_chart(fig_prog, use_container_width=True)
-    st.caption("ℹ️ **Action:** Projecting MAP trends to estimate 'Time to Crash'. Prepare vasopressors if trajectory intersects Red Line.")
+# --- TAB 1: HEMODYNAMICS ---
+with tab_hemo:
+    col_main, col_detail = st.columns([3, 1])
+    with col_main:
+        st.markdown('<div class="nexus-card">', unsafe_allow_html=True)
+        st.markdown('<div class="label-xs">REAL-TIME PERFUSION TRACKING</div>', unsafe_allow_html=True)
+        fig_timeline = utils.plot_neon_timeline(df, curr_time)
+        st.plotly_chart(fig_timeline, use_container_width=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col_detail:
+        st.markdown('<div class="nexus-card">', unsafe_allow_html=True)
+        st.markdown('<div class="label-xs">AI DIAGNOSIS</div><br>', unsafe_allow_html=True)
+        if current['CO'] < 4.0 and current['SVR'] > 20:
+            st.markdown("### 🥶 COLD SHOCK")
+            st.markdown("Low Flow, High Resistance.")
+            st.error("Protocol: INOTROPES")
+        elif current['MAP'] < 65:
+            st.markdown("### 🩸 HYPOTENSION")
+            st.warning("Protocol: FLUIDS")
+        else:
+            st.markdown("### ✅ STABLE")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-with c_mid:
-    # 2. Diagnosis
-    fig_pheno = utils.plot_shock_phenotype(df, curr_time)
-    st.plotly_chart(fig_pheno, use_container_width=True)
-    st.caption("ℹ️ **Diagnosis:** Movement into Orange/Red zones indicates low stroke volume compensation. Consider fluid challenge.")
+# --- TAB 2: FLUID PHYSICS ---
+with tab_phys:
+    c_starling, c_coupling = st.columns(2)
+    
+    with c_starling:
+        st.markdown('<div class="nexus-card">', unsafe_allow_html=True)
+        st.markdown('<div class="label-xs">STARLING CURVE (PRELOAD RESPONSIVENESS)</div>', unsafe_allow_html=True)
+        # The chart
+        fig_starling = utils.plot_starling_curve(df, curr_time)
+        st.plotly_chart(fig_starling, use_container_width=True)
+        
+        # Actionable Insight
+        slope = (current['PP'] - prev['PP']) / (current['DBP'] - prev['DBP'] + 0.01)
+        if slope > 0.5:
+            st.success("🌊 RESPONDER: Fluids will increase Stroke Volume.")
+        else:
+            st.error("🛑 NON-RESPONDER: Fluids will cause congestion.")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-with c_right:
-    # 3. Early Warning
-    fig_auto = utils.plot_autonomic_strip(df, curr_time)
-    st.plotly_chart(fig_auto, use_container_width=True)
-    st.caption("ℹ️ **Early Warning:** Drop in Entropy + PI indicates autonomic stress response *before* BP drops.")
+    with c_coupling:
+        st.markdown('<div class="nexus-card">', unsafe_allow_html=True)
+        st.markdown('<div class="label-xs">V-A COUPLING (PUMP vs PIPES)</div>', unsafe_allow_html=True)
+        fig_svr = utils.plot_svr_co_coupling(df, curr_time)
+        st.plotly_chart(fig_svr, use_container_width=True)
+        st.info("Top Left = Vasoconstricted. Bottom Right = Vasodilated.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# --- TAB 3: ORGAN SYSTEMS ---
+with tab_organ:
+    st.markdown('<div class="nexus-card">', unsafe_allow_html=True)
+    st.markdown('<div class="label-xs">SYSTEMIC IMPACT MATRIX</div>', unsafe_allow_html=True)
+    fig_matrix = utils.plot_organ_matrix(df, curr_time)
+    st.plotly_chart(fig_matrix, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
