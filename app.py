@@ -88,14 +88,23 @@ st.markdown(f"""
 # --- 2. RESUSCITATION TARGETS (KPIs) ---
 cols = st.columns(6)
 
-def tile(col, label, val, unit, delta, target_val, invert=False, target_range=None):
+def tile(col, label, val, unit, delta, target_val, invert=False, target_range=None, fmt="{:.0f}"):
+    """
+    Displays a metric tile.
+    val: Raw numeric value (for logic comparison).
+    fmt: Format string for display (e.g. "{:.1f}").
+    """
+    # Logic Check (Using raw number)
     is_bad = val < target_range[0] if target_range else (val > target_val if invert else val < target_val)
     color = "c-crit" if is_bad else "c-ok"
+    
+    # Format for display
+    display_val = fmt.format(val)
     
     col.markdown(f"""
     <div class="metric-tile">
         <div class="tile-label">{label}</div>
-        <div class="tile-val">{val}</div>
+        <div class="tile-val">{display_val}</div>
         <div class="tile-unit">{unit}</div>
         <div class="tile-context {color}">{delta}</div>
     </div>
@@ -103,26 +112,26 @@ def tile(col, label, val, unit, delta, target_val, invert=False, target_range=No
 
 # 1. MAP
 d_map = cur['MAP'] - prv['MAP']
-tile(cols[0], "MAP (Pressure)", f"{cur['MAP']:.0f}", "mmHg", f"{d_map:+.0f}", 65)
+tile(cols[0], "MAP (Pressure)", cur['MAP'], "mmHg", f"{d_map:+.0f}", 65, fmt="{:.0f}")
 
 # 2. CI
 d_ci = cur['CI'] - prv['CI']
-tile(cols[1], "Cardiac Index", f"{cur['CI']:.1f}", "L/min/m2", f"{d_ci:+.1f}", 2.5)
+tile(cols[1], "Cardiac Index", cur['CI'], "L/min/m2", f"{d_ci:+.1f}", 2.5, fmt="{:.1f}")
 
 # 3. SVRI
 d_svr = cur['SVRI'] - prv['SVRI']
-tile(cols[2], "SVRI (Resist)", f"{cur['SVRI']:.0f}", "dyn", f"{d_svr:+.0f}", 800)
+tile(cols[2], "SVRI (Resist)", cur['SVRI'], "dyn", f"{d_svr:+.0f}", 800, fmt="{:.0f}")
 
 # 4. DO2I
 d_do2 = cur['DO2I'] - prv['DO2I']
-tile(cols[3], "DO2I (Delivery)", f"{cur['DO2I']:.0f}", "mL/m2", f"{d_do2:+.0f}", 400)
+tile(cols[3], "DO2I (Delivery)", cur['DO2I'], "mL/m2", f"{d_do2:+.0f}", 400, fmt="{:.0f}")
 
 # 5. Lactate
 d_lac = cur['Lactate'] - prv['Lactate']
-tile(cols[4], "Lactate", f"{cur['Lactate']:.1f}", "mmol/L", f"{d_lac:+.1f}", 2.0, invert=True)
+tile(cols[4], "Lactate", cur['Lactate'], "mmol/L", f"{d_lac:+.1f}", 2.0, invert=True, fmt="{:.1f}")
 
 # 6. Urine
-tile(cols[5], "Urine Output", f"{cur['Urine']:.1f}", "mL/kg/hr", "Oliguric" if cur['Urine']<0.5 else "Adequate", 0.5)
+tile(cols[5], "Urine Output", cur['Urine'], "mL/kg/hr", "Oliguric" if cur['Urine']<0.5 else "Adequate", 0.5, fmt="{:.1f}")
 
 # --- 3. ROW 1: MACRO-HEMODYNAMICS (The "Bullseye") ---
 c_left, c_right = st.columns([1, 1])
