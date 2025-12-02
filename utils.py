@@ -6,26 +6,30 @@ from scipy.signal import welch
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
-# --- 1. THEME: DARK MATTER (Cyberpunk Medical) ---
+# --- 1. THEME: TITAN DARK ---
 THEME = {
-    'bg': '#050505',
-    'card': 'rgba(20, 25, 35, 0.7)',
-    'grid': '#1f2937',
-    'text': '#e2e8f0',
+    'bg': '#000000',
+    'card': '#111111',
+    'grid': '#333333',
+    'text': '#e0e0e0',
     # Signals
-    'hr': '#00f2ea',       # Cyan (Electrical)
-    'map': '#ff0055',      # Neon Red (Pressure)
-    'ci': '#00ff9f',       # Neon Green (Flow)
-    'svr': '#ffaa00',      # Neon Amber (Resistance)
-    'do2': '#b026ff',      # Neon Purple (Metabolic)
-    'pca': '#ffffff',      # White (Global State)
+    'hr': '#00e5ff',       # Cyan (Electrical)
+    'map': '#ff2975',      # Neon Red (Pressure)
+    'ci': '#00ff33',       # Neon Green (Flow)
+    'svr': '#ff9900',      # Neon Orange (Resist)
+    'do2': '#8c1eff',      # Neon Purple (Metabolic)
+    'pca': '#ffffff',      # White
     # Zones
-    'zone_ok': 'rgba(0, 255, 159, 0.1)',
-    'zone_warn': 'rgba(255, 170, 0, 0.1)',
-    'zone_crit': 'rgba(255, 0, 85, 0.1)'
+    'zone_ok': 'rgba(0, 255, 51, 0.1)',
+    'zone_crit': 'rgba(255, 41, 117, 0.1)'
 }
 
-# --- 2. PHYSICS ENGINE (DIGITAL TWIN) ---
+# --- 2. HELPER ---
+def hex_to_rgba(hex_color, opacity=0.1):
+    hex_color = hex_color.lstrip('#')
+    return f"rgba({int(hex_color[0:2], 16)},{int(hex_color[2:4], 16)},{int(hex_color[4:6], 16)},{opacity})"
+
+# --- 3. PHYSICS ENGINE (DIGITAL TWIN) ---
 class DigitalTwin:
     def __init__(self):
         self.preload = 12.0
@@ -37,11 +41,11 @@ class DigitalTwin:
         eff_afterload = self.afterload * (1.0 - (sepsis_severity * 0.7))
         eff_preload = self.preload * (1.0 - (sepsis_severity * 0.4))
         
-        # Starling Curve (Sigmoid)
+        # Starling Curve
         sv_max = 100 * self.contractility
         sv = sv_max * (eff_preload**2 / (eff_preload**2 + 8**2))
         
-        # Baroreflex (Target MAP 90)
+        # Baroreflex
         est_map = (sv * 75 * eff_afterload * 0.05) + 5
         hr_drive = np.clip((90 - est_map) * 1.8, 0, 90)
         hr = 70 + hr_drive
@@ -57,19 +61,17 @@ class DigitalTwin:
         
         return {'HR': hr, 'SV': sv, 'CO': co, 'MAP': map_val, 'SVR': svr_dyne, 'DO2': do2, 'Lac_Gen': lac_gen}
 
-def simulate_omni_scenario(mins=720):
+def simulate_titan_data(mins=720):
     twin = DigitalTwin()
     history = []
     curr_lac = 1.0
     
-    # Generate Sepsis Curve (Progressive Shock)
+    # Generate Sepsis Curve
     sepsis = np.linspace(0, 0.85, mins)
     noise_gen = np.random.normal(0, 0.02, mins)
     
     for t in range(mins):
         s = twin.step(sepsis[t] + noise_gen[t])
-        
-        # Integrate Lactate
         curr_lac = (curr_lac * 0.99) + s['Lac_Gen']
         s['Lactate'] = max(0.8, curr_lac)
         s['Preload_Status'] = twin.preload * (1 - sepsis[t]*0.4)
@@ -82,187 +84,126 @@ def simulate_omni_scenario(mins=720):
     df['SVRI'] = df['SVR'] * 1.8
     df['PP'] = df['SV'] / 1.5
     df['SI'] = df['HR'] / df['MAP']
-    
-    # Entropy (Complexity) - Rolling STD of diff
     df['Entropy'] = df['HR'].rolling(60).apply(lambda x: np.std(np.diff(x))).fillna(1.0)
-    
-    # Renal (Autoregulation Logic)
     df['Urine'] = np.where(df['MAP'] > 65, 1.0 + np.random.normal(0,0.1,mins), np.maximum(0, 1.0 - (65-df['MAP'])*0.05))
     
-    # PCA (State Space)
+    # PCA
     scaler = StandardScaler()
     pca_data = df[['HR', 'MAP', 'CI', 'SVR']].fillna(0)
     pca_coords = PCA(n_components=2).fit_transform(scaler.fit_transform(pca_data))
     df['PC1'] = pca_coords[:,0]
     df['PC2'] = pca_coords[:,1]
     
-    # --- PREDICTION BRANCHES (Multiverse) ---
+    # Predictions
     last_sev = sepsis[-1]
-    last_lac = curr_lac
-    
     pred_nat, pred_fluid, pred_press = [], [], []
-    
     for i in range(30):
         sev = last_sev + 0.001*i
-        # Natural
         pred_nat.append(twin.step(sev)['MAP'])
-        # Fluid (+30% preload)
         t_f = DigitalTwin(); t_f.preload *= 1.3
         pred_fluid.append(t_f.step(sev)['MAP'])
-        # Pressor (+40% afterload)
         t_p = DigitalTwin(); t_p.afterload *= 1.4; t_p.preload *= 1.1
         pred_press.append(t_p.step(sev)['MAP'])
         
     preds = {'time': np.arange(mins, mins+30), 'nat': pred_nat, 'fluid': pred_fluid, 'press': pred_press}
-    
     return df, preds
 
-# --- 3. VISUALIZATION SUITE ---
+# --- 4. VISUALIZATIONS ---
 
 def plot_spark_spc(df, col, color, thresh_low, thresh_high):
-    """Sparkline with Background SPC Zones."""
     data = df[col].iloc[-60:]
     fig = go.Figure()
-    
-    # Zones
     fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=thresh_low, y1=thresh_high, 
                   fillcolor="rgba(255,255,255,0.05)", line_width=0, layer="below")
-    
-    # Line
     fig.add_trace(go.Scatter(x=data.index, y=data.values, mode='lines', 
-                             line=dict(color=color, width=2), fill='tozeroy', fillcolor=f"rgba{color[1:-1]},0.1)"))
-    
+                             line=dict(color=color, width=2), fill='tozeroy', fillcolor=hex_to_rgba(color, 0.2)))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                       height=50, margin=dict(l=0,r=0,t=0,b=0), xaxis=dict(visible=False), yaxis=dict(visible=False))
     return fig
 
 def plot_predictive_compass(df, preds, curr_time):
-    """The Bullseye with Intervention Vectors."""
     data = df.iloc[max(0, curr_time-60):curr_time]
     cur = data.iloc[-1]
-    
     fig = go.Figure()
     
-    # Background Diagnostic Zones
+    # Zones
     fig.add_shape(type="rect", x0=0, y0=0, x1=2.5, y1=65, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
     fig.add_shape(type="rect", x0=2.5, y0=65, x1=6.0, y1=100, fillcolor=THEME['zone_ok'], line_width=0, layer="below")
     
-    # History
-    fig.add_trace(go.Scatter(x=data['CI'], y=data['MAP'], mode='lines', 
-                             line=dict(color='#555', width=1, dash='dot'), name='Trend'))
+    # Data
+    fig.add_trace(go.Scatter(x=data['CI'], y=data['MAP'], mode='lines', line=dict(color='#555', width=1, dash='dot')))
+    fig.add_trace(go.Scatter(x=[cur['CI']], y=[cur['MAP']], mode='markers', marker=dict(color='white', size=12, symbol='cross')))
     
-    # Current
-    fig.add_trace(go.Scatter(x=[cur['CI']], y=[cur['MAP']], mode='markers',
-                             marker=dict(color='white', size=12, symbol='cross'), name='Now'))
-    
-    # Vectors (Fluid vs Pressor)
-    # Fluid (Blue)
-    fig.add_annotation(x=cur['CI']*1.25, y=preds['fluid'][-1], ax=cur['CI'], ay=cur['MAP'],
-                       xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['hr'],
-                       text="FLUIDS", font=dict(color=THEME['hr'], size=10))
-    # Pressor (Purple)
-    fig.add_annotation(x=cur['CI']*1.05, y=preds['press'][-1], ax=cur['CI'], ay=cur['MAP'],
-                       xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['do2'],
-                       text="PRESSOR", font=dict(color=THEME['do2'], size=10))
+    # Vectors
+    fig.add_annotation(x=cur['CI']*1.25, y=preds['fluid'][-1], ax=cur['CI'], ay=cur['MAP'], xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['ci'], text="FLUID", font=dict(color=THEME['ci']))
+    fig.add_annotation(x=cur['CI']*1.05, y=preds['press'][-1], ax=cur['CI'], ay=cur['MAP'], xref="x", yref="y", axref="x", ayref="y", showarrow=True, arrowhead=2, arrowcolor=THEME['do2'], text="PRESSOR", font=dict(color=THEME['do2']))
 
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=300, margin=dict(l=10,r=10,t=40,b=10), title="<b>Predictive Compass</b>",
-                      xaxis=dict(title="Cardiac Index", range=[1.5, 6], gridcolor=THEME['grid']),
-                      yaxis=dict(title="MAP", range=[40, 100], gridcolor=THEME['grid']), showlegend=False)
+                      height=280, margin=dict(l=10,r=10,t=30,b=10), title="<b>Predictive Compass</b>",
+                      xaxis=dict(title="CI", range=[1.5, 6], gridcolor=THEME['grid']), yaxis=dict(title="MAP", range=[40, 100], gridcolor=THEME['grid']), showlegend=False)
     return fig
 
 def plot_multiverse(df, preds, curr_time):
-    """Time-series projection."""
     hist = df.iloc[max(0, curr_time-60):curr_time]
     fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MAP'], line=dict(color='white', width=2), name='Past'))
-    fig.add_trace(go.Scatter(x=preds['time'], y=preds['nat'], line=dict(color='#555', dash='dot'), name='Natural'))
-    fig.add_trace(go.Scatter(x=preds['time'], y=preds['fluid'], line=dict(color=THEME['hr']), name='Fluid'))
-    fig.add_trace(go.Scatter(x=preds['time'], y=preds['press'], line=dict(color=THEME['do2']), name='Pressor'))
-    
-    fig.add_hline(y=65, line_color='red', line_dash='dot', opacity=0.5)
-    
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MAP'], line=dict(color='white', width=2)))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['nat'], line=dict(color='#555', dash='dot')))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['fluid'], line=dict(color=THEME['ci'])))
+    fig.add_trace(go.Scatter(x=preds['time'], y=preds['press'], line=dict(color=THEME['do2'])))
+    fig.add_hline(y=65, line_color='red', line_dash='dot')
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Intervention Multiverse</b>",
-                      xaxis=dict(title="Time", gridcolor=THEME['grid']), 
-                      yaxis=dict(title="MAP", gridcolor=THEME['grid']), showlegend=False)
+                      height=280, margin=dict(l=10,r=10,t=30,b=10), title="<b>Intervention Horizon</b>",
+                      xaxis=dict(gridcolor=THEME['grid']), yaxis=dict(title="MAP", gridcolor=THEME['grid']), showlegend=False)
     return fig
 
-def plot_pca_space(df, curr_time):
-    """Global Stability State Space."""
-    data = df.iloc[max(0, curr_time-200):curr_time]
+def plot_starling_vector(df, curr_time):
+    data = df.iloc[max(0, curr_time-30):curr_time]
     fig = go.Figure()
-    
-    # Safe Circle
-    fig.add_shape(type="circle", x0=-2, y0=-2, x1=2, y1=2, line_color=THEME['ci'])
-    
-    fig.add_trace(go.Scatter(x=data['PC1'], y=data['PC2'], mode='lines', 
-                             line=dict(color=THEME['pca'], width=1), opacity=0.5))
-    fig.add_trace(go.Scatter(x=[data['PC1'].iloc[-1]], y=[data['PC2'].iloc[-1]], mode='markers',
-                             marker=dict(color='red', size=8)))
-                             
+    x=np.linspace(0,20,50); y=np.log(x+1)*30
+    fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='#333', dash='dot')))
+    fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', line=dict(color=THEME['ci'])))
+    fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], mode='markers', marker=dict(color='white', size=8, symbol='triangle-up')))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=0,r=0,t=30,b=0), title="<b>Global State (PCA)</b>",
-                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Starling Vector</b>",
+                      xaxis=dict(title="Preload", gridcolor=THEME['grid']), yaxis=dict(title="SV", gridcolor=THEME['grid']), showlegend=False)
     return fig
 
 def plot_oxygen_debt(df, curr_time):
-    """DO2 vs Lactate."""
     data = df.iloc[max(0, curr_time-120):curr_time]
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    
-    fig.add_trace(go.Scatter(x=data.index, y=data['DO2'], fill='tozeroy', 
-                             fillcolor="rgba(176, 38, 255, 0.1)", line=dict(color=THEME['do2']), name='DO2'), secondary_y=False)
-    fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], line=dict(color='red', width=2), name='Lactate'), secondary_y=True)
-    
+    fig.add_trace(go.Scatter(x=data.index, y=data['DO2'], fill='tozeroy', fillcolor=hex_to_rgba(THEME['do2'],0.1), line=dict(color=THEME['do2']), name='DO2'), secondary_y=False)
+    fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], line=dict(color='red', width=2), name='Lac'), secondary_y=True)
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                       height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>O2 Supply/Demand</b>", showlegend=False)
     return fig
 
-def plot_starling_vector(df, curr_time):
-    """Vectorized Fluid Responsiveness."""
-    data = df.iloc[max(0, curr_time-30):curr_time]
-    fig = go.Figure()
-    
-    x_ideal = np.linspace(0, 20, 50); y_ideal = np.log(x_ideal+1)*30
-    fig.add_trace(go.Scatter(x=x_ideal, y=y_ideal, line=dict(color='#333', dash='dot')))
-    
-    # Trajectory
-    fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', line=dict(color=THEME['ci'])))
-    # Current Head
-    fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], 
-                             mode='markers', marker=dict(color='white', size=8, symbol='triangle-up')))
-                             
-    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Starling Vector</b>",
-                      xaxis=dict(title="Preload", gridcolor=THEME['grid']), yaxis=dict(title="SV", gridcolor=THEME['grid']))
-    return fig
-
 def plot_renal_cliff(df, curr_time):
-    """MAP vs Urine."""
     data = df.iloc[max(0, curr_time-120):curr_time]
     fig = go.Figure()
-    
-    # Cliff
     fig.add_shape(type="rect", x0=30, y0=0, x1=65, y1=0.5, fillcolor=THEME['zone_crit'], line_width=0, layer="below")
-    
-    fig.add_trace(go.Scatter(x=data['MAP'], y=data['Urine'], mode='lines+markers', 
-                             marker=dict(color=np.linspace(0,1,len(data)), colorscale='Reds'), line=dict(color='#555')))
-    
+    fig.add_trace(go.Scatter(x=data['MAP'], y=data['Urine'], mode='lines+markers', marker=dict(color=np.linspace(0,1,len(data)), colorscale='Reds'), line=dict(color='#555')))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                       height=200, margin=dict(l=10,r=10,t=30,b=10), title="<b>Renal Autoregulation</b>",
-                      xaxis=dict(title="MAP", gridcolor=THEME['grid']), yaxis=dict(title="Urine", gridcolor=THEME['grid']))
+                      xaxis=dict(title="MAP", gridcolor=THEME['grid']), yaxis=dict(title="Urine", gridcolor=THEME['grid']), showlegend=False)
     return fig
 
 def plot_spectrum(df, curr_time):
-    """HRV PSD."""
     data = df['HR'].iloc[max(0, curr_time-64):curr_time].values
     if len(data) < 64: return go.Figure()
     f, Pxx = welch(data, fs=1/60)
-    
     fig = go.Figure(go.Scatter(x=f, y=Pxx, fill='tozeroy', line=dict(color=THEME['svr'])))
     fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                      height=150, margin=dict(l=0,r=0,t=20,b=0), title="<b>Autonomic PSD</b>",
+                      height=200, margin=dict(l=0,r=0,t=20,b=0), title="<b>Autonomic PSD</b>",
                       xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=False))
+    return fig
+
+def plot_pca_space(df, curr_time):
+    data = df.iloc[max(0, curr_time-200):curr_time]
+    fig = go.Figure()
+    fig.add_shape(type="circle", x0=-2, y0=-2, x1=2, y1=2, line_color=THEME['ci'])
+    fig.add_trace(go.Scatter(x=data['PC1'], y=data['PC2'], mode='lines', line=dict(color='white', width=1), opacity=0.5))
+    fig.add_trace(go.Scatter(x=[data['PC1'].iloc[-1]], y=[data['PC2'].iloc[-1]], mode='markers', marker=dict(color='red', size=8)))
+    fig.update_layout(template="plotly_dark", paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                      height=200, margin=dict(l=0,r=0,t=30,b=0), title="<b>Global State (PCA)</b>",
+                      xaxis=dict(visible=False), yaxis=dict(visible=False), showlegend=False)
     return fig
