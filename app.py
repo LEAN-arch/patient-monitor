@@ -4,145 +4,116 @@ import numpy as np
 import utils
 
 # --- CONFIG ---
-st.set_page_config(page_title="OMNI | Command Center", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="TITAN | ICU", layout="wide", initial_sidebar_state="collapsed")
 
-# --- DARK MATTER CSS ---
+# --- CSS: TITAN UI ---
 st.markdown("""
 <style>
-    .stApp { background-color: #050505; color: #e2e8f0; }
-    
-    /* Neon Card */
-    .neon-card {
-        background: rgba(20, 25, 35, 0.6);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 6px;
-        padding: 10px;
-        backdrop-filter: blur(10px);
-        margin-bottom: 10px;
+    .stApp { background-color: #000000; color: #e0e0e0; }
+    .titan-card {
+        background: #111111; border: 1px solid #333; border-radius: 4px; padding: 5px 10px;
+        margin-bottom: 5px;
     }
+    .kpi-lbl { font-size: 0.7rem; color: #888; font-weight: 700; text-transform: uppercase; }
+    .kpi-val { font-size: 1.5rem; font-weight: 700; font-family: 'Roboto Mono', monospace; }
     
-    /* Sparkline KPI */
-    .spark-val { font-size: 1.8rem; font-weight: 800; font-family: monospace; text-shadow: 0 0 10px rgba(0,0,0,0.5); }
-    .spark-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; letter-spacing: 1px; }
-    
-    /* Alert Header */
-    .alert-banner {
-        padding: 15px; border-radius: 6px; border: 1px solid; margin-bottom: 20px;
+    .alert-header {
+        background: #222; border-left: 5px solid; padding: 10px; margin-bottom: 10px;
         display: flex; justify-content: space-between; align-items: center;
-        background: rgba(255, 0, 85, 0.1); border-color: #ff0055; color: #ff0055;
     }
-    .safe-banner { background: rgba(0, 255, 159, 0.1); border-color: #00ff9f; color: #00ff9f; }
-    
 </style>
 """, unsafe_allow_html=True)
 
-# --- LOAD DATA ---
+# --- LOAD ---
 @st.cache_data
-def load(): return utils.simulate_omni_scenario()
+def load(): return utils.simulate_titan_data()
 df, preds = load()
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("Omni Control")
+    st.header("TITAN Control")
     curr_time = st.slider("Time", 200, 720, 720)
-    st.info("Simulation: Sepsis w/ Predictive Digital Twin")
 
-# --- CALC ---
 cur = df.iloc[curr_time-1]
-prv = df.iloc[curr_time-15]
 
 # --- 1. INTELLIGENT HEADER ---
-# AI Logic
+status = "STABLE"
+action = "MONITOR"
+col = "#00ff33"
 if cur['MAP'] < 65:
-    status = "CRITICAL: CIRCULATORY FAILURE"
-    rec = "RECOMMENDATION: START VASOPRESSORS (Septic Shock Profile)"
-    style = "alert-banner"
+    status = "CRITICAL: SHOCK"
+    action = "VASOPRESSORS" if cur['CI'] > 2.5 else "FLUIDS"
+    col = "#ff2975"
 elif cur['Lactate'] > 2.0:
-    status = "WARNING: OCCULT HYPOPERFUSION"
-    rec = "RECOMMENDATION: OPTIMIZE FLOW (Fluid/Inotrope)"
-    style = "alert-banner"
-else:
-    status = "STABLE: HEMODYNAMICS OPTIMIZED"
-    rec = "CONTINUE MONITORING"
-    style = "safe-banner"
+    status = "OCCULT HYPOPERFUSION"
+    action = "OPTIMIZE FLOW"
+    col = "#ff9900"
 
 st.markdown(f"""
-<div class="{style}">
-    <div style="font-size:1.2rem; font-weight:bold;">{status}</div>
-    <div style="font-weight:600;">{rec}</div>
+<div class="alert-header" style="border-color:{col}">
+    <div style="font-size:1.2rem; font-weight:bold; color:{col}">{status}</div>
+    <div style="font-weight:bold;">PROTOCOL: {action}</div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. ROW 1: SPARKLINE KPI STRIP (The Vital 6) ---
+# --- 2. ROW 1: SPARKLINE KPI STRIP ---
 cols = st.columns(6)
-
-def spark_card(col, label, val, unit, color, df_col, low, high):
+def kpi(col, lbl, val, unit, color, df_col, l, h):
     with col:
-        st.markdown(f"""
-        <div class="neon-card" style="border-top: 3px solid {color}">
-            <div class="spark-lbl">{label}</div>
-            <div class="spark-val" style="color:{color}">{val}</div>
-            <div style="font-size:0.7rem; color:#64748b">{unit}</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.plotly_chart(utils.plot_spark_spc(df, df_col, color, low, high), use_container_width=True, config={'displayModeBar': False})
+        st.markdown(f"<div class='titan-card' style='border-top:2px solid {color}'><div class='kpi-lbl'>{lbl}</div><div class='kpi-val' style='color:{color}'>{val}<span style='font-size:0.8rem;color:#666'>{unit}</span></div></div>", unsafe_allow_html=True)
+        st.plotly_chart(utils.plot_spark_spc(df, df_col, color, l, h), use_container_width=True, config={'displayModeBar': False})
 
-spark_card(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#ff0055", "MAP", 65, 100)
-spark_card(cols[1], "CARD. INDEX", f"{cur['CI']:.1f}", "L/min", "#00ff9f", "CI", 2.5, 4.0)
-spark_card(cols[2], "SVR", f"{cur['SVR']:.0f}", "dyn", "#ffaa00", "SVR", 800, 1200)
-spark_card(cols[3], "STROKE VOL", f"{cur['SV']:.0f}", "mL", "#00f2ea", "SV", 60, 100)
-spark_card(cols[4], "LACTATE", f"{cur['Lactate']:.1f}", "mmol", "#b026ff", "Lactate", 0, 2.0)
-spark_card(cols[5], "ENTROPY", f"{cur['Entropy']:.2f}", "σ", "#ffffff", "Entropy", 0.5, 2.0)
+kpi(cols[0], "MAP", f"{cur['MAP']:.0f}", "mmHg", "#ff2975", "MAP", 65, 100)
+kpi(cols[1], "C. INDEX", f"{cur['CI']:.1f}", "L/min", "#00ff33", "CI", 2.5, 4.0)
+kpi(cols[2], "SVR", f"{cur['SVRI']:.0f}", "dyn", "#ff9900", "SVRI", 800, 1200)
+kpi(cols[3], "STROKE VOL", f"{cur['SV']:.0f}", "mL", "#00e5ff", "SV", 60, 100)
+kpi(cols[4], "LACTATE", f"{cur['Lactate']:.1f}", "mM", "#8c1eff", "Lactate", 0, 2.0)
+kpi(cols[5], "ENTROPY", f"{cur['Entropy']:.2f}", "σ", "#ffffff", "Entropy", 0.5, 2.0)
 
-# --- 3. ROW 2: THE PREDICTIVE CORE (Bullseye & Multiverse) ---
-c_left, c_right = st.columns([1, 1])
+# --- 3. ROW 2: PREDICTION & DECISION (60% Height) ---
+c_dec1, c_dec2, c_dec3 = st.columns([2, 2, 1])
 
-with c_left:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**1. PREDICTIVE COMPASS (Guidance)**")
+with c_dec1:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>1. PREDICTIVE COMPASS</div>", unsafe_allow_html=True)
     st.plotly_chart(utils.plot_predictive_compass(df, preds, curr_time), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-with c_right:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**2. INTERVENTION MULTIVERSE (Horizon)**")
+with c_dec2:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>2. INTERVENTION MULTIVERSE</div>", unsafe_allow_html=True)
     st.plotly_chart(utils.plot_multiverse(df, preds, curr_time), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-# --- 4. ROW 3: DEEP PHYSIOLOGY (Physics & Mechanics) ---
-c3, c4, c5 = st.columns(3)
-
-with c3:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**3. STARLING VECTOR**")
-    st.plotly_chart(utils.plot_starling_vector(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with c4:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**4. OXYGEN DEBT LEDGER**")
-    st.plotly_chart(utils.plot_oxygen_debt(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-with c5:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**5. RENAL AUTOREGULATION**")
-    st.plotly_chart(utils.plot_renal_cliff(df, curr_time), use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# --- 5. ROW 4: ADVANCED MATH (The "Black Box" Output) ---
-c6, c7 = st.columns(2)
-
-with c6:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**6. GLOBAL STATE SPACE (PCA)**")
-    st.caption("Visualizing Total System Stability.")
+with c_dec3:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>3. GLOBAL STABILITY (PCA)</div>", unsafe_allow_html=True)
     st.plotly_chart(utils.plot_pca_space(df, curr_time), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
-with c7:
-    st.markdown('<div class="neon-card">', unsafe_allow_html=True)
-    st.markdown("**7. NEURO-AUTONOMIC SPECTRUM**")
-    st.caption("Heart Rate Variability Power Spectral Density.")
+# --- 4. ROW 3: ORGAN MECHANICS (30% Height) ---
+c_org1, c_org2, c_org3, c_org4 = st.columns(4)
+
+with c_org1:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>4. STARLING VECTOR</div>", unsafe_allow_html=True)
+    st.plotly_chart(utils.plot_starling_vector(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c_org2:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>5. O2 DEBT LEDGER</div>", unsafe_allow_html=True)
+    st.plotly_chart(utils.plot_oxygen_debt(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c_org3:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>6. RENAL CLIFF</div>", unsafe_allow_html=True)
+    st.plotly_chart(utils.plot_renal_cliff(df, curr_time), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with c_org4:
+    st.markdown('<div class="titan-card">', unsafe_allow_html=True)
+    st.markdown("<div class='kpi-lbl'>7. NEURO SPECTRUM</div>", unsafe_allow_html=True)
     st.plotly_chart(utils.plot_spectrum(df, curr_time), use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
