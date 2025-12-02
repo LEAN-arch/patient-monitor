@@ -1,343 +1,211 @@
-import streamlit as st
-import pandas as pd
 import numpy as np
-import utils
-
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="PRECISION | GDT", layout="wide", initial_sidebar_state="collapsed")
-
-# --- CSS: CLINICAL DASHBOARD ---
-st.markdown("""
-<style>
-    .stApp { background-color: #f8fafc; }
-    
-    /* Tiles */
-    .metric-tile {
-        background: white;
-        border: 1px solid #e2e8f0;
-        border-radius: 6px;
-        padding: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        text-align: center;
-    }
-    .tile-label { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-    .tile-val { font-size: 1.8rem; font-weight: 800; color: #0f172a; line-height: 1.1; }
-    .tile-unit { font-size: 0.8rem; color: #94a3b8; }
-    .tile-context { font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
-    
-    /* Context Colors */
-    .c-crit { color: #ef4444; }
-    .c-warn { color: #d97706; }
-    .c-ok { color: #10b981; }
-    
-    /* Header */
-    .protocol-header {
-        background: #1e293b;
-        color: white;
-        padding: 10px 20px;
-        border-radius: 6px;
-        margin-bottom: 15px;
-        display: flex;
-        justify_content: space-between;
-        align-items: center;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- LOAD ---
-@st.cache_data
-def load(): return utils.simulate_gdt_data()
-df = load()
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("Simulation Control")
-    curr_time = st.slider("Time (min)", 200, 720, 720)
-    st.info("Scenario: Warm Sepsis -> Cold Shock")
-
-# --- CALC ---
-cur = df.iloc[curr_time-1]
-prv = df.iloc[curr_time-15]
-
-# --- 1. PROTOCOL HEADER ---
-# Heuristic Logic
-status = "STABLE"
-action = "MONITOR"
-bg_col = "#10b981" # Green
-
-if cur['Lactate'] > 2.0:
-    status = "TISSUE HYPOXIA"
-    action = "CHECK DO2 TARGETS"
-    bg_col = "#d97706" # Orange
-
-if cur['MAP'] < 65:
-    status = "CIRCULATORY FAILURE"
-    if cur['CI'] > 2.5:
-        action = "START VASOPRESSORS (Septic)"
-    else:
-        action = "FLUIDS / INOTROPES"
-    bg_col = "#ef4444" # Red
-
-st.markdown(f"""
-<div class="protocol-header" style="background:{bg_col}">
-    <div><strong>STATUS:</strong> {status}</div>
-    <div><strong>ACTION:</strong> {action}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# --- 2. RESUSCITATION TARGETS (KPIs) ---
-cols = st.columns(6)
-
-def tile(col, label, val, unit, delta, target_val, invert=False, target_range=None, fmt="{:.0f}"):
-    """
-    Displays a metric tile.
-    val: Raw numeric value (for logic comparison).
-    fmt: Format string for display (e.g. "{:.1f}").
-    """
-    # Logic Check (Using raw number)
-    is_bad = val < target_range[0] if target_range else (val > target_val if invert else val < target_val)
-    color = "c-crit" if is_bad else "c-ok"
-    
-    # Format for display
-    display_val = fmt.format(val)
-    
-    col.markdown(f"""
-    <div class="metric-tile">
-        <div class="tile-label">{label}</div>
-        <div class="tile-val">{display_val}</div>
-        <div class="tile-unit">{unit}</div>
-        <div class="tile-context {color}">{delta}</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# 1. MAP
-d_map = cur['MAP'] - prv['MAP']
-tile(cols[0], "MAP (Pressure)", cur['MAP'], "mmHg", f"{d_map:+.0f}", 65, fmt="{:.0f}")
-
-# 2. CI
-d_ci = cur['CI'] - prv['CI']
-tile(cols[1], "Cardiac Index", cur['CI'], "L/min/m2", f"{d_ci:+.1f}", 2.5, fmt="{:.1f}")
-
-# 3. SVRI
-d_svr = cur['SVRI'] - prv['SVRI']
-tile(cols[2], "SVRI (Resist)", cur['SVRI'], "dyn", f"{d_svr:+.0f}", 800, fmt="{:.0f}")
-
-# 4. DO2I
-d_do2 = cur['DO2I'] - prv['DO2I']
-tile(cols[3], "DO2I (Delivery)", cur['DO2I'], "mL/m2", f"{d_do2:+.0f}", 400, fmt="{:.0f}")
-
-# 5. Lactate
-d_lac = cur['Lactate'] - prv['Lactate']
-tile(cols[4], "Lactate", cur['Lactate'], "mmol/L", f"{d_lac:+.1f}", 2.0, invert=True, fmt="{:.1f}")
-
-# 6. Urine
-tile(cols[5], "Urine Output", cur['Urine'], "mL/kg/hr", "Oliguric" if cur['Urine']<0.5 else "Adequate", 0.5, fmt="{:.1f}")
-
-# --- 3. ROW 1: MACRO-HEMODYNAMICS (The "Bullseye") ---
-c_left, c_right = st.columns([1, 1])
-
-with c_left:
-    st.markdown("**1. HEMODYNAMIC TARGETING**")
-    st.caption("Identify Shock Type: High Flow/Low Pressure vs Low Flow/Low Pressure.")
-    fig_bull = utils.plot_hemodynamic_bullseye(df, curr_time)
-    st.plotly_chart(fig_bull, use_container_width=True)
-
-with c_right:
-    st.markdown("**2. OXYGEN SUPPLY VS DEMAND**")
-    st.caption("The root cause of shock. Ensure Delivery (Green) > Debt (Red).")
-    fig_ox = utils.plot_oxygen_ledger(df, curr_time)
-    st.plotly_chart(fig_ox, use_container_width=True)
-
-# --- 4. ROW 2: ORGAN PROTECTION & MECHANICS ---
-c3, c4, c5 = st.columns(3)
-
-with c3:
-    st.markdown("**3. RENAL TRAJECTORY**")
-    st.caption("Preventing AKI.")
-    fig_ren = utils.plot_renal_trajectory(df, curr_time)
-    st.plotly_chart(fig_ren, use_container_width=True)
-
-with c4:
-    st.markdown("**4. FLUID RESPONSIVENESS**")
-    st.caption("Frank-Starling Vector.")
-    fig_star = utils.plot_frank_starling_vector(df, curr_time)
-    st.plotly_chart(fig_star, use_container_width=True)
-import streamlit as st
 import pandas as pd
-import numpy as np
-import utils
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy.signal import welch
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="PRECISION | GDT", layout="wide", initial_sidebar_state="collapsed")
+# --- 1. THEME: GOAL DIRECTED THERAPY (GDT) ---
+THEME = {
+    'bg': '#ffffff',
+    'grid': '#f1f5f9',
+    'text': '#1e293b',
+    # Physiology
+    'flow': '#0ea5e9',     # Blue (Cardiac Index)
+    'pressure': '#be185d', # Magenta (MAP)
+    'resist': '#d97706',   # Amber (SVR)
+    'oxygen': '#10b981',   # Green (DO2)
+    'debt': '#ef4444',     # Red (Lactate)
+    'renal': '#8b5cf6',    # Violet
+    # Zones
+    'target': 'rgba(16, 185, 129, 0.1)',
+    'danger': 'rgba(239, 68, 68, 0.1)'
+}
 
-# --- CSS: CLINICAL DASHBOARD ---
-st.markdown("""
-<style>
-    .stApp { background-color: #f8fafc; }
+# --- 2. HELPER: COLOR CONVERSION ---
+def hex_to_rgba(hex_color, opacity=0.1):
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 6:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+        return f"rgba({r},{g},{b},{opacity})"
+    return hex_color
+
+# --- 3. SIMULATION: SEPTIC SHOCK CASCADE ---
+def simulate_gdt_data(mins=720):
+    t = np.arange(mins)
     
-    /* Tiles */
-    .metric-tile {
-        background: white;
-        border: 1px solid #e2e8f0;
-        border-radius: 6px;
-        padding: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        text-align: center;
-    }
-    .tile-label { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-    .tile-val { font-size: 1.8rem; font-weight: 800; color: #0f172a; line-height: 1.1; }
-    .tile-unit { font-size: 0.8rem; color: #94a3b8; }
-    .tile-context { font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
+    def noise(n, amp=1):
+        return np.convolve(np.random.normal(0,1,n), [0.1]*10, mode='same') * amp
+
+    # Baseline Vitals (70kg Patient)
+    hr = 75 + noise(mins, 3)
+    sbp = 120 + noise(mins, 3)
+    dbp = 75 + noise(mins, 2)
+    spo2 = 98 + noise(mins, 0.5)
+    hb = 12.0 # Hemoglobin (g/dL)
     
-    /* Context Colors */
-    .c-crit { color: #ef4444; }
-    .c-warn { color: #d97706; }
-    .c-ok { color: #10b981; }
+    # SCENARIO: Warm Sepsis (High CO, Low SVR) -> Cold Shock (Low CO, High Lactate)
+    start = 240
     
-    /* Header */
-    .protocol-header {
-        background: #1e293b;
-        color: white;
-        padding: 10px 20px;
-        border-radius: 6px;
-        margin-bottom: 15px;
-        display: flex;
-        justify_content: space-between;
-        align-items: center;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- LOAD ---
-@st.cache_data
-def load(): return utils.simulate_gdt_data()
-df = load()
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("Simulation Control")
-    curr_time = st.slider("Time (min)", 200, 720, 720)
-    st.info("Scenario: Warm Sepsis -> Cold Shock")
-
-# --- CALC ---
-cur = df.iloc[curr_time-1]
-prv = df.iloc[curr_time-15]
-
-# --- 1. PROTOCOL HEADER ---
-# Heuristic Logic
-status = "STABLE"
-action = "MONITOR"
-bg_col = "#10b981" # Green
-
-if cur['Lactate'] > 2.0:
-    status = "TISSUE HYPOXIA"
-    action = "CHECK DO2 TARGETS"
-    bg_col = "#d97706" # Orange
-
-if cur['MAP'] < 65:
-    status = "CIRCULATORY FAILURE"
-    if cur['CI'] > 2.5:
-        action = "START VASOPRESSORS (Septic)"
-    else:
-        action = "FLUIDS / INOTROPES"
-    bg_col = "#ef4444" # Red
-
-st.markdown(f"""
-<div class="protocol-header" style="background:{bg_col}">
-    <div><strong>STATUS:</strong> {status}</div>
-    <div><strong>ACTION:</strong> {action}</div>
-</div>
-""", unsafe_allow_html=True)
-
-# --- 2. RESUSCITATION TARGETS (KPIs) ---
-cols = st.columns(6)
-
-def tile(col, label, val, unit, delta, target_val, invert=False, target_range=None, fmt="{:.0f}"):
-    """
-    Displays a metric tile.
-    val: Raw numeric value (for logic comparison).
-    fmt: Format string for display (e.g. "{:.1f}").
-    """
-    # Logic Check (Using raw number)
-    is_bad = val < target_range[0] if target_range else (val > target_val if invert else val < target_val)
-    color = "c-crit" if is_bad else "c-ok"
+    # 1. Vasodilation (SVR Crash)
+    dbp_drop = np.linspace(0, 30, mins-start)
+    sbp_drop = np.linspace(0, 35, mins-start)
     
-    # Format for display
-    display_val = fmt.format(val)
+    # 2. Compensatory Hyperdynamic State
+    hr_rise = np.linspace(0, 50, mins-start)
     
-    col.markdown(f"""
-    <div class="metric-tile">
-        <div class="tile-label">{label}</div>
-        <div class="tile-val">{display_val}</div>
-        <div class="tile-unit">{unit}</div>
-        <div class="tile-context {color}">{delta}</div>
-    </div>
-    """, unsafe_allow_html=True)
+    hr[start:] += hr_rise
+    sbp[start:] -= sbp_drop
+    dbp[start:] -= dbp_drop
+    
+    df = pd.DataFrame({'HR': hr, 'SBP': sbp, 'DBP': dbp, 'SpO2': spo2}, index=t)
+    
+    # --- ADVANCED PHYSIOLOGY ---
+    df['MAP'] = (df['SBP'] + 2*df['DBP']) / 3
+    df['PP'] = df['SBP'] - df['DBP']
+    
+    # Cardiac Index (CI) Proxy
+    raw_co_proxy = df['PP'] * df['HR']
+    df['CI'] = (raw_co_proxy / raw_co_proxy.mean()) * 3.0
+    
+    # SVRI Proxy
+    df['SVRI'] = ((df['MAP'] - 8) / df['CI']) * 80
+    
+    # Oxygen Delivery (DO2I)
+    df['DO2I'] = df['CI'] * hb * 1.34 * (df['SpO2']/100)
+    
+    # Lactate
+    df['Lactate'] = 1.0
+    septic_lac = np.zeros(mins)
+    septic_lac[start:] = np.linspace(0, 5, mins-start)
+    df['Lactate'] += septic_lac
+    
+    # Renal Perfusion
+    df['Urine'] = 1.0 # mL/kg/hr
+    renal_hit = np.maximum(0, (65 - df['MAP']) * 0.05)
+    df['Urine'] = np.maximum(0.1, df['Urine'] - renal_hit)
 
-# 1. MAP
-d_map = cur['MAP'] - prv['MAP']
-tile(cols[0], "MAP (Pressure)", cur['MAP'], "mmHg", f"{d_map:+.0f}", 65, fmt="{:.0f}")
+    return df
 
-# 2. CI
-d_ci = cur['CI'] - prv['CI']
-tile(cols[1], "Cardiac Index", cur['CI'], "L/min/m2", f"{d_ci:+.1f}", 2.5, fmt="{:.1f}")
+# --- 4. ACTIONABLE VISUALIZATIONS ---
 
-# 3. SVRI
-d_svr = cur['SVRI'] - prv['SVRI']
-tile(cols[2], "SVRI (Resist)", cur['SVRI'], "dyn", f"{d_svr:+.0f}", 800, fmt="{:.0f}")
+def plot_hemodynamic_bullseye(df, curr_time):
+    """X: Cardiac Index (Flow), Y: MAP (Pressure)"""
+    data = df.iloc[max(0, curr_time-60):curr_time]
+    cur_ci = data['CI'].iloc[-1]
+    cur_map = data['MAP'].iloc[-1]
+    
+    fig = go.Figure()
+    
+    # Goal Box
+    fig.add_shape(type="rect", x0=2.5, y0=65, x1=4.0, y1=90, 
+                  fillcolor=THEME['target'], line_width=1, line_color="green", layer="below")
+    fig.add_annotation(x=3.25, y=77, text="GOAL", font=dict(color="green", size=12), showarrow=False)
 
-# 4. DO2I
-d_do2 = cur['DO2I'] - prv['DO2I']
-tile(cols[3], "DO2I (Delivery)", cur['DO2I'], "mL/m2", f"{d_do2:+.0f}", 400, fmt="{:.0f}")
+    # Quadrant annotations
+    if cur_map < 65:
+        if cur_ci > 2.5:
+            txt, col = "VASODILATED\n(Add Pressors)", "orange"
+        else:
+            txt, col = "HYPOPERFUSION\n(Fluids/Inotropes)", "red"
+        fig.add_annotation(x=cur_ci, y=cur_map+10, text=txt, font=dict(color=col, weight="bold"))
 
-# 5. Lactate
-d_lac = cur['Lactate'] - prv['Lactate']
-tile(cols[4], "Lactate", cur['Lactate'], "mmol/L", f"{d_lac:+.1f}", 2.0, invert=True, fmt="{:.1f}")
+    fig.add_trace(go.Scatter(x=data['CI'], y=data['MAP'], mode='lines', 
+                             line=dict(color='gray', width=1, dash='dot'), name='History'))
+    fig.add_trace(go.Scatter(x=[cur_ci], y=[cur_map], mode='markers', 
+                             marker=dict(color=THEME['pressure'], size=15, symbol='cross'), name='YOU ARE HERE'))
 
-# 6. Urine
-tile(cols[5], "Urine Output", cur['Urine'], "mL/kg/hr", "Oliguric" if cur['Urine']<0.5 else "Adequate", 0.5, fmt="{:.1f}")
+    fig.update_layout(template="plotly_white", height=350, margin=dict(l=0,r=0,t=40,b=0),
+                      title="<b>Hemodynamic Bullseye (Targeting)</b>",
+                      xaxis=dict(title="Cardiac Index (Flow)", range=[1.5, 6.0], gridcolor=THEME['grid']),
+                      yaxis=dict(title="MAP (Pressure)", range=[40, 110], gridcolor=THEME['grid']))
+    return fig
 
-# --- 3. ROW 1: MACRO-HEMODYNAMICS (The "Bullseye") ---
-c_left, c_right = st.columns([1, 1])
+def plot_oxygen_ledger(df, curr_time):
+    """DO2 vs Lactate"""
+    start = max(0, curr_time - 180)
+    data = df.iloc[start:curr_time]
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    fig.add_trace(go.Scatter(x=data.index, y=data['DO2I'], fill='tozeroy', 
+                             fillcolor=hex_to_rgba(THEME['oxygen'], 0.2),
+                             line=dict(color=THEME['oxygen']), name='Oxygen Delivery'), secondary_y=False)
+    
+    fig.add_hline(y=400, line_dash="dot", line_color="green", annotation_text="Crit DO2", secondary_y=False)
+    
+    fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], 
+                             line=dict(color=THEME['debt'], width=3), name='Lactate'), secondary_y=True)
+    
+    if data['Lactate'].iloc[-1] > 2.0:
+         fig.add_annotation(x=data.index[-1], y=data['Lactate'].iloc[-1], 
+                            text="METABOLIC FAILURE", arrowhead=1, ax=-40, ay=-40, bgcolor="red", font=dict(color="white"))
 
-with c_left:
-    st.markdown("**1. HEMODYNAMIC TARGETING**")
-    st.caption("Identify Shock Type: High Flow/Low Pressure vs Low Flow/Low Pressure.")
-    fig_bull = utils.plot_hemodynamic_bullseye(df, curr_time)
-    st.plotly_chart(fig_bull, use_container_width=True)
+    fig.update_layout(template="plotly_white", height=250, margin=dict(l=0,r=0,t=30,b=0), 
+                      title="<b>Oxygen Debt Ledger</b>", legend=dict(orientation="h", y=1.1))
+    fig.update_yaxes(title="DO2I", secondary_y=False, gridcolor=THEME['grid'])
+    fig.update_yaxes(title="Lactate", secondary_y=True, showgrid=False)
+    return fig
 
-with c_right:
-    st.markdown("**2. OXYGEN SUPPLY VS DEMAND**")
-    st.caption("The root cause of shock. Ensure Delivery (Green) > Debt (Red).")
-    fig_ox = utils.plot_oxygen_ledger(df, curr_time)
-    st.plotly_chart(fig_ox, use_container_width=True)
+def plot_renal_trajectory(df, curr_time):
+    data = df.iloc[max(0, curr_time-120):curr_time]
+    fig = go.Figure()
+    
+    # Danger Zone
+    fig.add_shape(type="rect", x0=40, y0=0, x1=65, y1=0.5, 
+                  fillcolor=THEME['danger'], line_width=0, layer="below")
+    fig.add_annotation(x=52, y=0.25, text="AKI ZONE", font=dict(color="red"), showarrow=False)
 
-# --- 4. ROW 2: ORGAN PROTECTION & MECHANICS ---
-c3, c4, c5 = st.columns(3)
+    fig.add_trace(go.Scatter(x=data['MAP'], y=data['Urine'], mode='lines+markers',
+                             marker=dict(color=np.linspace(0,1,len(data)), colorscale='Reds_r'),
+                             line=dict(color='gray', width=1)))
+    fig.add_trace(go.Scatter(x=[data['MAP'].iloc[-1]], y=[data['Urine'].iloc[-1]], mode='markers',
+                             marker=dict(color=THEME['renal'], size=10)))
 
-with c3:
-    st.markdown("**3. RENAL TRAJECTORY**")
-    st.caption("Preventing AKI.")
-    fig_ren = utils.plot_renal_trajectory(df, curr_time)
-    st.plotly_chart(fig_ren, use_container_width=True)
+    fig.update_layout(template="plotly_white", height=250, margin=dict(l=0,r=0,t=30,b=0),
+                      title="<b>Renal Function Trajectory</b>",
+                      xaxis=dict(title="MAP", range=[40, 100], gridcolor=THEME['grid']),
+                      yaxis=dict(title="Urine", range=[0, 1.5], gridcolor=THEME['grid']))
+    return fig
 
-with c4:
-    st.markdown("**4. FLUID RESPONSIVENESS**")
-    st.caption("Frank-Starling Vector.")
-    fig_star = utils.plot_frank_starling_vector(df, curr_time)
-    st.plotly_chart(fig_star, use_container_width=True)
+def plot_frank_starling_vector(df, curr_time):
+    data = df.iloc[max(0, curr_time-60):curr_time]
+    fig = go.Figure()
+    
+    x = np.linspace(40, 100, 100)
+    y = np.log(x)*25 - 50
+    fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='lightgray', dash='dot'), name='Ideal'))
+    
+    # Trajectory
+    fig.add_trace(go.Scatter(x=data['DBP'], y=data['PP'], mode='lines', 
+                             line=dict(color=THEME['flow'], width=3), name='History'))
+    
+    # Current Vector Tip (using Marker instead of Arrow property to fix error)
+    fig.add_trace(go.Scatter(x=[data['DBP'].iloc[-1]], y=[data['PP'].iloc[-1]], mode='markers',
+                             marker=dict(color=THEME['flow'], size=12, symbol='triangle-up'), name='Current'))
+    
+    slope = (data['PP'].iloc[-1] - data['PP'].iloc[0]) / (data['DBP'].iloc[-1] - data['DBP'].iloc[0] + 0.01)
+    status, color = ("FLUID RESPONSIVE", "green") if slope > 0.5 else ("NON-RESPONDER", "red")
+    
+    fig.add_annotation(x=data['DBP'].mean(), y=data['PP'].max()+5, text=status, font=dict(color=color, weight="bold"), showarrow=False)
 
-with c5:
-    st.markdown("**5. AUTONOMIC STRESS**")
-    st.caption("Spectral Analysis (PSD).")
-    fig_auto = utils.plot_autonomic_psd(df, curr_time)
-    st.plotly_chart(fig_auto, use_container_width=True)
+    fig.update_layout(template="plotly_white", height=250, margin=dict(l=0,r=0,t=30,b=0),
+                      title="<b>Starling Vector</b>",
+                      xaxis=dict(title="Preload (DBP)", gridcolor=THEME['grid']),
+                      yaxis=dict(title="Stroke Vol (PP)", gridcolor=THEME['grid']))
+    return fig
 
-# --- 5. TEXT SUMMARY ---
-st.info(f"""
-**CLINICAL SUMMARY (T={curr_time}):**
-The patient demonstrates **{'Hyperdynamic' if cur['CI'] > 3.0 else 'Hypodynamic'}** physiology. 
-{'SVR is Critically Low (Vasoplegia)' if cur['SVRI'] < 800 else 'SVR is maintained'}.
-Lactate is {'Rising (Metabolic Failure)' if d_lac > 0 else 'Stable'}.
-**Priority:** {'Restore Perfusion Pressure (Vasopressors)' if cur['MAP'] < 65 else 'Optimize Flow'}.
-""")
+def plot_autonomic_psd(df, curr_time):
+    window = df['HR'].iloc[max(0, curr_time-64):curr_time].values
+    if len(window) < 64: return go.Figure()
+    
+    f, Pxx = welch(window, fs=1/60)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=f, y=Pxx, fill='tozeroy', line=dict(color=THEME['resist'])))
+    
+    fig.update_layout(template="plotly_white", height=150, margin=dict(l=0,r=0,t=20,b=0),
+                      title="<b>Autonomic Stress (PSD)</b>", 
+                      xaxis=dict(title="Freq (Hz)", showticklabels=False), yaxis=dict(showticklabels=False))
+    return fig
