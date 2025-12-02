@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from sklearn.linear_model import LinearRegression
 from scipy.signal import welch
 
 # --- 1. THEME (Precision Clinical) ---
@@ -86,10 +85,10 @@ def simulate_panopticon_data(mins=720):
 
 # --- 4. VISUALIZATION LIBRARY ---
 
-# A. SPARKLINE GENERATOR (Fixed)
+# A. SPARKLINE GENERATOR
 def plot_sparkline(df, col, color):
     data = df[col].iloc[-60:]
-    fill_color = hex_to_rgba(color, 0.1) # Proper conversion
+    fill_color = hex_to_rgba(color, 0.1)
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=data.index, y=data.values, mode='lines', 
@@ -168,8 +167,11 @@ def plot_renal_curve(df, curr_time):
 # E. ADVANCED MATH
 def plot_spectral_density(df, curr_time):
     # PSD of Heart Rate (Autonomic Tone)
-    window = df['HR'].iloc[max(0, curr_time-64):curr_time]
+    # FIX: Select values as numpy array to prevent scipy KeyError
+    window = df['HR'].iloc[max(0, curr_time-64):curr_time].values
+    
     if len(window) < 64: return go.Figure()
+    
     f, Pxx = welch(window, fs=1/60) # 1 sample per min assumption
     
     fig = go.Figure()
