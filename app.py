@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from sklearn.linear_model import LinearRegression
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 from typing import Tuple, Dict, Any, Optional, List
 
 # ==========================================
@@ -216,7 +217,7 @@ def predict_horizon(base_twin: DigitalTwin, last_sev: float, horizon: int = 30) 
         "inot": {"MAP": extract(inot,"MAP"), "CI": extract(inot,"CO")/1.8}
     }
 
-def simulate_titan_data(mins=720, twin=None, seed=None):
+def simulate_data(mins=720, twin=None, seed=None):
     rng = np.random.default_rng(seed)
     base = twin.copy() if twin else DigitalTwin()
     sepsis = np.linspace(0.0, 0.85, mins)
@@ -454,6 +455,7 @@ st.markdown(THEME_CSS, unsafe_allow_html=True)
 # B. Data Management
 @st.cache_data
 def get_sim_data():
+    # FIXED: Renamed function call to match definition
     return simulate_data(mins=720, seed=42)
 
 df, preds = get_sim_data()
