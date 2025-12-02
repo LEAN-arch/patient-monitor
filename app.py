@@ -339,13 +339,23 @@ def sparkline(df: pd.DataFrame, col: str, color: str, low: float, high: float) -
     if data.empty:
         return _base_layout(fig, height=48)
     
+    # Calculate RGBA color string manually to avoid errors
+    c = color.lstrip('#')
+    if len(c) == 6:
+        r = int(c[0:2], 16)
+        g = int(c[2:4], 16)
+        b = int(c[4:6], 16)
+        fill_color_str = f"rgba({r}, {g}, {b}, 0.1)"
+    else:
+        fill_color_str = "rgba(100,100,100,0.1)" # Fallback
+
     # Background SPC zone
     fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=low, y1=high, 
                   fillcolor="rgba(0,0,0,0.03)", line_width=0, layer="below")
     
     fig.add_trace(go.Scatter(x=data.index, y=data.values, mode="lines", 
                              line=dict(color=color, width=2), fill="tozeroy", 
-                             fillcolor=f"rgba{color.lstrip('#')[0:2]},{color.lstrip('#')[2:4]},{color.lstrip('#')[4:6]},0.1)")) # Approximate Hex to rgba
+                             fillcolor=fill_color_str))
     _base_layout(fig, height=48)
     fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
     return fig
@@ -401,7 +411,7 @@ def organ_radar(df: pd.DataFrame, curr_idx: int) -> go.Figure:
     theta = ["Renal","Cardiac","Metabolic","Perfusion","Renal"]
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(r=[0.2]*5, theta=theta, fill="toself", fillcolor=PLOT_THEME["ok"], line=dict(width=0)))
-    fig.add_trace(go.Scatterpolar(r=R, theta=theta, fill="toself", fillcolor=PLOT_THEME["crit"], line=dict(color=PLOT_THEME["map"], width=2)))
+    fig.add_trace(go.Scatterpolar(r=R, theta=theta, fill="toself", fillcolor=PLOT_THEME["crit"], line=dict(color="red", width=2)))
     _base_layout(fig, height=280, title="<b>Organ Risk Topology</b>")
     fig.update_polars(radialaxis=dict(visible=False, range=[0,1]), bgcolor="rgba(0,0,0,0)")
     fig.update_layout(showlegend=False)
