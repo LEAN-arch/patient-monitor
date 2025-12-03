@@ -6,10 +6,10 @@ from plotly.subplots import make_subplots
 from scipy.signal import welch
 
 # ==========================================
-# 1. CONFIGURATION
+# 1. CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="TITAN | Evidence-Based CDS", 
+    page_title="TITAN | High-Fidelity CDS", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
@@ -23,7 +23,8 @@ THEME = {
     # Status
     "crit": "#ef4444", "warn": "#f59e0b", "ok": "#10b981", "neutral": "#64748b",
     # Domains
-    "hemo": "#0369a1", "meta": "#7c3aed", "renal": "#d97706", "neuro": "#334155"
+    "hemo": "#0369a1", "meta": "#7c3aed", "renal": "#d97706", "neuro": "#334155",
+    "resp": "#06b6d4", "coag": "#db2777"
 }
 
 STYLING = """
@@ -71,22 +72,22 @@ STYLING = """
 
 class ClinicalCalculator:
     """
-    Computes validated clinical scores from raw measurable data.
+    Computes validated clinical scores based on Sepsis-3 guidelines.
     """
     
     @staticmethod
-    def calculate_sofa(paO2, platelets, bilirubin, map_val, gcs, creatinine, urine_output):
+    def calculate_sofa(paO2, fiO2, platelets, bilirubin, map_val, ne_dose, gcs, creatinine):
         """
-        Sequential Organ Failure Assessment (SOFA) Score.
-        Reference: Vincent et al, Intensive Care Med 1996.
+        True SOFA Scoring Logic (Vincent et al. 1996).
         """
         score = 0
         
-        # 1. Respiration (PaO2/FiO2 approx)
-        if paO2 < 100: score += 4
-        elif paO2 < 200: score += 3
-        elif paO2 < 300: score += 2
-        elif paO2 < 400: score += 1
+        # 1. Respiratory (PaO2/FiO2)
+        pafi = paO2 / fiO2
+        if pafi < 100: score += 4
+        elif pafi < 200: score += 3
+        elif pafi < 300: score += 2
+        elif pafi < 400: score += 1
         
         # 2. Coagulation (Platelets x10^3/uL)
         if platelets < 20: score += 4
@@ -100,10 +101,11 @@ class ClinicalCalculator:
         elif bilirubin > 2.0: score += 2
         elif bilirubin > 1.2: score += 1
         
-        # 4. Cardiovascular (MAP) - Simplified without pressor dose data
-        if map_val < 70: score += 1 
-        # Note: Scores 2-4 require vasopressor doses. We assume MAP < 65 implies shock (Score >=3 logic proxy)
-        if map_val < 65: score = max(score, 3) 
+        # 4. Cardiovascular (Vasopressor dependent)
+        # Logic: If on pressors, score is determined by dose. If not, by MAP.
+        if ne_dose > 0.1: score += 4
+        elif ne_dose > 0: score += 3
+        elif map_val < 70: score += 1 
         
         # 5. CNS (Glasgow Coma Scale)
         if gcs < 6: score += 4
@@ -111,133 +113,147 @@ class ClinicalCalculator:
         elif gcs < 12: score += 2
         elif gcs < 14: score += 1
         
-        # 6. Renal (Creatinine mg/dL or Urine Output)
-        if creatinine > 5.0 or urine_output < 200: score += 4
-        elif creatinine > 3.5 or urine_output < 500: score += 3
+        # 6. Renal (Creatinine mg/dL)
+        if creatinine > 5.0: score += 4
+        elif creatinine > 3.5: score += 3
         elif creatinine > 2.0: score += 2
         elif creatinine > 1.2: score += 1
         
-        return score
+        return score, pafi
 
     @staticmethod
     def calculate_cpo(map_val, co):
-        """
-        Cardiac Power Output (Watts).
-        Reference: Fincke et al, JACC 2004.
-        Target > 0.6 W.
-        """
         return (map_val * co) / 451
 
     @staticmethod
-    def calculate_dsi(hr, dbp):
-        """
-        Diastolic Shock Index.
-        Reference: Ospina-Tascon et al, Crit Care 2017.
-        Target < 2.0. High = Vasoplegia.
-        """
-        return hr / dbp if dbp > 0 else 0
-
-    @staticmethod
     def calculate_entropy(time_series_data):
-        """
-        Sample Entropy of Heart Rate (Complexity).
-        Reference: Moorman et al, Sepsis and HRV.
-        Low Entropy (<0.8) indicates autonomic uncoupling/sepsis.
-        """
         if len(time_series_data) < 10: return 1.0
-        # Simplified complexity metric: Standard Deviation of Difference / Standard Deviation
         diff = np.diff(time_series_data)
         return np.std(diff) / (np.std(time_series_data) + 0.01)
 
 # ==========================================
-# 3. DATA STREAM ENGINE
+# 3. ADVANCED PHYSIOLOGY ENGINE (KINETICS)
 # ==========================================
 
-def generate_measurable_data(scenario: str, mins=360):
+def simulate_complex_physiology(scenario: str, fi_o2: float, mins=360):
     """
-    Generates realistic time-series for MEASURABLE variables based on clinical phenotypes.
-    No 'deterioration rate' sliders. Only physiological outputs.
+    Generates physiological data with realistic organ kinetics.
     """
     t = np.arange(mins)
     
-    # Noise Generator (Pink Noise for biological realism)
+    # 1/f Noise Generator
     def bio_noise(n, amp=1):
         white = np.random.normal(0, 1, n)
         return np.convolve(white, np.ones(10)/10, mode='same') * amp
 
-    # --- SCENARIO DEFINITIONS ---
-    if scenario == "Healthy Baseline":
-        hr_base, map_base, lac_base = 70, 90, 1.0
-        hr_trend, map_trend = 0, 0
-        entropy_factor = 1.0 # High complexity
-        
-    elif scenario == "Compensated Sepsis (Occult)":
-        # HR high, MAP normal, Lactate rising
-        hr_base, map_base, lac_base = 100, 75, 2.5
-        hr_trend, map_trend = 0.5, -0.1
-        entropy_factor = 0.7 
-        
-    elif scenario == "Vasoplegic Shock":
-        # HR very high, MAP low, Lactate critical
-        hr_base, map_base, lac_base = 120, 55, 5.0
-        hr_trend, map_trend = 0.2, -0.2
-        entropy_factor = 0.3 # Metronomic heart rate
-        
-    elif scenario == "Cardiogenic Shock":
-        # HR high/var, MAP low, Lactate high, Low CO
-        hr_base, map_base, lac_base = 90, 60, 4.0
-        hr_trend, map_trend = 0.1, -0.1
-        entropy_factor = 0.5
-
-    # --- GENERATE VITALS ---
-    # Apply trends over time
-    trend_vec = np.linspace(0, 1, mins)
+    # --- STATE INITIALIZATION ---
+    # Base Trajectory (0.0 = Healthy, 1.0 = Max Severity)
+    # Sigmoidal progression for shock
+    severity = 1 / (1 + np.exp(-0.02 * (t - mins/2))) 
+    if scenario == "Healthy Baseline": severity *= 0.0
+    elif scenario == "Compensated Sepsis": severity *= 0.4
+    elif scenario == "Septic Shock": severity = np.clip(severity + 0.2, 0, 1)
     
-    hr = hr_base + (trend_vec * 20 * hr_trend) + bio_noise(mins, 3 * entropy_factor)
-    map_val = map_base + (trend_vec * 20 * map_trend) + bio_noise(mins, 2 * entropy_factor)
+    # --- 1. CARDIOVASCULAR (Vasopressor Model) ---
+    # Native MAP drops as severity increases
+    native_map = 85 - (severity * 50) + bio_noise(mins, 2) # Drops to 35 without help
     
-    # Calculate DBP (Pulse Pressure narrows in cardiogenic, widens/low in sepsis)
-    if scenario == "Vasoplegic Shock":
-        dbp = map_val - 15 # Wide PP initially but low DBP
-    else:
-        dbp = map_val - 20 # Normal
+    # Vasopressor Logic (Simulated Autoregulation or Exogenous)
+    # If MAP < 65, NE is added to restore it
+    ne_dose = np.zeros(mins)
+    final_map = np.zeros(mins)
+    
+    for i in range(mins):
+        current_native = native_map[i]
+        required_boost = 65 - current_native
         
-    # --- GENERATE LABS (Discrete Interpolated) ---
-    lactate = np.linspace(lac_base, lac_base + (2.0 if "Shock" in scenario else 0), mins)
-    creatinine = np.linspace(1.0, 1.0 + (1.5 if map_base < 65 else 0), mins)
-    bilirubin = np.linspace(0.8, 0.8 + (1.0 if "Sepsis" in scenario else 0), mins)
-    platelets = np.linspace(200, 200 - (100 if "Sepsis" in scenario else 0), mins)
-    paO2 = np.linspace(400, 400 - (150 if "Shock" in scenario else 0), mins)
-    gcs = 15 - (trend_vec * (5 if "Shock" in scenario else 0)).astype(int)
-    urine = np.maximum(0, 1.5 - (trend_vec * (1.0 if map_base < 65 else 0))) # mL/kg/hr
+        if required_boost > 0:
+            # NE response curve: 1 mcg/kg/min ~= +60 mmHg (diminishing returns in shock)
+            responsiveness = max(0.2, 1.0 - severity[i]) # Vasoplegia reduces response
+            dose_needed = required_boost / (40 * responsiveness)
+            ne_dose[i] = min(dose_needed, 2.0) # Max dose 2.0
+            final_map[i] = current_native + (ne_dose[i] * 40 * responsiveness)
+        else:
+            final_map[i] = current_native
 
-    # Cardiac Output (Estimated)
-    # CO = MAP / SVR. In Sepsis SVR is low. In Cardiogenic CO is low.
-    if scenario == "Vasoplegic Shock":
-        co = 7.0 + bio_noise(mins, 0.5) # Hyperdynamic then fails
-    elif scenario == "Cardiogenic Shock":
-        co = 2.5 + bio_noise(mins, 0.2) # Low flow
-    else:
-        co = 5.0 + bio_noise(mins, 0.5)
+    hr = 70 + (severity * 60) + (ne_dose * 10) + bio_noise(mins, 4) # Tachycardia
+    co = 5.0 + (severity * 3.0) if "Sepsis" in scenario else 5.0 - (severity * 2.0) # Hyper vs Hypodynamic
+    
+    # --- 2. RESPIRATORY (PaO2/FiO2) ---
+    # Shunt fraction increases with severity
+    shunt = 0.05 + (severity * 0.4)
+    # Alveolar Gas Equation approx
+    p_alv = (fi_o2 * 713) - 40/0.8
+    # PaO2 drops with shunt
+    pao2 = p_alv * (1 - shunt) + bio_noise(mins, 5)
+    
+    # --- 3. RENAL KINETICS (Creatinine Doubling) ---
+    # GFR drops as MAP drops or Severity increases (ATN)
+    baseline_cr = 0.9
+    cr_trajectory = np.zeros(mins)
+    curr_cr = baseline_cr
+    
+    for i in range(mins):
+        # GFR Damage function
+        damage = 0
+        if final_map[i] < 65: damage += 0.002 # Ischemic hit
+        if severity[i] > 0.5: damage += 0.001 # Cytokine hit
+        
+        # Kinetic accumulation (Zero-order generation, First-order elimination)
+        # Simplified: Cr rises if clearance fails
+        prod_rate = 0.001 
+        clearance = 0.001 * (1.0 - min(1.0, severity[i]*1.5)) # Clearance drops
+        
+        curr_cr = curr_cr + prod_rate - (curr_cr * clearance)
+        cr_trajectory[i] = curr_cr
 
+    # --- 4. HEPATIC (Bilirubin Rise) ---
+    # Liver injury is slow.
+    bili = 0.8 + np.cumsum(severity * 0.002) 
+    
+    # --- 5. HEMATOLOGIC (Platelet Consumption) ---
+    # DIC Model: Consumption > Production
+    # Starts at 250, drops, might nadir and recover
+    plt_consumption = severity * 0.5
+    plt = 250 - np.cumsum(plt_consumption) + bio_noise(mins, 5)
+    plt = np.maximum(10, plt)
+
+    # --- 6. METABOLIC (Lactate) ---
+    lactate = 1.0 + (severity * 8.0) + bio_noise(mins, 0.2)
+
+    # GCS Proxy
+    gcs = np.maximum(3, 15 - (severity * 10).astype(int))
+    
+    # Urine Output (Oliguria < 0.5)
+    urine = np.maximum(0, 1.5 - (severity * 1.5))
+
+    # Compile
     df = pd.DataFrame({
         "Timestamp": t,
-        "HR": hr, "MAP": map_val, "DBP": dbp, "CO": co,
-        "Lactate": lactate, "Creatinine": creatinine, "Bilirubin": bilirubin,
-        "Platelets": platelets, "PaO2": paO2, "GCS": gcs, "Urine": urine
+        "HR": hr, "MAP": final_map, "CO": co, "NE_Dose": ne_dose,
+        "PaO2": pao2, "FiO2": fi_o2,
+        "Creatinine": cr_trajectory, "Bilirubin": bili, "Platelets": plt,
+        "Lactate": lactate, "GCS": gcs, "Urine": urine
     })
     
-    # --- CALCULATE DERIVED METRICS ---
-    # These are the "Value Add" metrics computed from the raw data
+    # Derived
     df["CPO"] = ClinicalCalculator.calculate_cpo(df["MAP"], df["CO"])
-    df["DSI"] = df["HR"] / df["DBP"]
     df["Entropy"] = df["HR"].rolling(30).apply(ClinicalCalculator.calculate_entropy).fillna(1.0)
     
-    # Real-time SOFA
-    df["SOFA"] = df.apply(lambda row: ClinicalCalculator.calculate_sofa(
-        row["PaO2"], row["Platelets"], row["Bilirubin"], row["MAP"], row["GCS"], row["Creatinine"], row["Urine"]*70*24
-    ), axis=1)
-
+    # Calculate Scores row-by-row
+    sofa_data = []
+    pafi_data = []
+    for _, row in df.iterrows():
+        s, p = ClinicalCalculator.calculate_sofa(
+            row["PaO2"], fi_o2, row["Platelets"], row["Bilirubin"], 
+            row["MAP"], row["NE_Dose"], row["GCS"], row["Creatinine"]
+        )
+        sofa_data.append(s)
+        pafi_data.append(p)
+        
+    df["SOFA"] = sofa_data
+    df["PaFi"] = pafi_data
+    
     return df
 
 # ==========================================
@@ -245,13 +261,11 @@ def generate_measurable_data(scenario: str, mins=360):
 # ==========================================
 
 def plot_sparkline_spc(df, col, color, lower_limit, upper_limit):
-    """
-    Sparkline with Standard Physiological Limits (Safety Corridor).
-    """
+    """Sparkline with Safety Corridor."""
     data = df[col].iloc[-60:]
     fig = go.Figure()
     
-    # Safety Corridor (Normal Range)
+    # Safety Corridor
     fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=lower_limit, y1=upper_limit,
                   fillcolor="rgba(0,0,0,0.03)", line_width=0, layer="below")
     
@@ -261,7 +275,6 @@ def plot_sparkline_spc(df, col, color, lower_limit, upper_limit):
         fillcolor=f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.1)"
     ))
     
-    # Current Head
     fig.add_trace(go.Scatter(x=[data.index[-1]], y=[data.values[-1]], mode='markers',
                              marker=dict(color=color, size=6)))
 
@@ -269,83 +282,65 @@ def plot_sparkline_spc(df, col, color, lower_limit, upper_limit):
                       xaxis=dict(visible=False), yaxis=dict(visible=False))
     return fig
 
-def plot_sofa_radar(row):
-    """
-    Visualizes the contribution of each organ system to the total SOFA score.
-    """
-    # Calculate individual components for display
-    # (Re-calculating briefly for visualization granularity)
-    c_resp = 4 if row['PaO2'] < 100 else (3 if row['PaO2'] < 200 else (1 if row['PaO2'] < 400 else 0))
-    c_coag = 4 if row['Platelets'] < 20 else (1 if row['Platelets'] < 150 else 0)
-    c_liver = 1 if row['Bilirubin'] > 1.2 else 0
-    c_card = 1 if row['MAP'] < 70 else 0
-    c_cns = 4 if row['GCS'] < 6 else (1 if row['GCS'] < 14 else 0)
-    c_ren = 1 if row['Creatinine'] > 1.2 else 0
+def plot_organ_kinetics(df, curr_idx):
+    """Visualizes the kinetics of Organ Failure (Renal & Hepatic)."""
+    data = df.iloc[max(0, curr_idx-180):curr_idx]
+    
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    
+    # Creatinine (Left)
+    fig.add_trace(go.Scatter(x=data.index, y=data["Creatinine"], mode='lines',
+                             line=dict(color=THEME["renal"], width=3), name="Creatinine"), secondary_y=False)
+    
+    # Bilirubin (Right)
+    fig.add_trace(go.Scatter(x=data.index, y=data["Bilirubin"], mode='lines',
+                             line=dict(color=THEME["meta"], width=2, dash='dot'), name="Bilirubin"), secondary_y=True)
+    
+    fig.update_layout(template="plotly_white", height=250, margin=dict(l=10,r=10,t=30,b=10),
+                      title="<b>Organ Dysfunction Kinetics</b>", showlegend=True, legend=dict(orientation="h", y=1.1))
+    fig.update_yaxes(title="Creatinine (mg/dL)", secondary_y=False, gridcolor=THEME["bg"])
+    fig.update_yaxes(title="Bilirubin (mg/dL)", secondary_y=True, showgrid=False)
+    return fig
+
+def plot_respiratory_status(df, curr_idx):
+    """Visualizes P/F Ratio bins."""
+    data = df.iloc[max(0, curr_idx-120):curr_idx]
+    fig = go.Figure()
+    
+    # ARDS Zones
+    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=0, y1=100, fillcolor="rgba(239, 68, 68, 0.2)", line_width=0)
+    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=100, y1=200, fillcolor="rgba(245, 158, 11, 0.2)", line_width=0)
+    fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=200, y1=300, fillcolor="rgba(253, 224, 71, 0.2)", line_width=0)
+    
+    fig.add_trace(go.Scatter(x=data.index, y=data["PaFi"], mode='lines', line=dict(color=THEME["resp"], width=3)))
+    
+    fig.update_layout(template="plotly_white", height=250, margin=dict(l=10,r=10,t=30,b=10),
+                      title="<b>Respiratory Status (P/F Ratio)</b>")
+    fig.update_yaxes(title="PaO2/FiO2", range=[50, 500])
+    return fig
+
+def plot_sofa_breakdown(row, sofa_score):
+    """Radar chart of SOFA components."""
+    # Calculate components for visualization
+    c_resp = 4 if row['PaFi'] < 100 else (3 if row['PaFi'] < 200 else (2 if row['PaFi'] < 300 else (1 if row['PaFi'] < 400 else 0)))
+    c_coag = 4 if row['Platelets'] < 20 else (3 if row['Platelets'] < 50 else (2 if row['Platelets'] < 100 else (1 if row['Platelets'] < 150 else 0)))
+    c_liver = 4 if row['Bilirubin'] > 12 else (3 if row['Bilirubin'] > 6 else (2 if row['Bilirubin'] > 2 else (1 if row['Bilirubin'] > 1.2 else 0)))
+    c_card = 4 if row['NE_Dose'] > 0.1 else (3 if row['NE_Dose'] > 0 else (1 if row['MAP'] < 70 else 0))
+    c_cns = 4 if row['GCS'] < 6 else (3 if row['GCS'] < 9 else (2 if row['GCS'] < 12 else (1 if row['GCS'] < 14 else 0)))
+    c_ren = 4 if row['Creatinine'] > 5 else (3 if row['Creatinine'] > 3.5 else (2 if row['Creatinine'] > 2 else (1 if row['Creatinine'] > 1.2 else 0)))
     
     vals = [c_resp, c_coag, c_liver, c_card, c_cns, c_ren, c_resp]
-    cats = ['Resp', 'Coag', 'Liver', 'CV', 'CNS', 'Renal', 'Resp']
+    cats = ['Resp\n(P/F)', 'Coag\n(Plt)', 'Liver\n(Bili)', 'CV\n(Pressor)', 'CNS\n(GCS)', 'Renal\n(Cr)', 'Resp']
     
     fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(r=[1]*7, theta=cats, fill='none', line=dict(color='#cbd5e1', dash='dot')))
+    fig.add_trace(go.Scatterpolar(r=[0,1,2,3,4,0], theta=cats, fill='none', line=dict(color='#cbd5e1', dash='dot')))
     fig.add_trace(go.Scatterpolar(r=vals, theta=cats, fill='toself', 
                                   fillcolor='rgba(239, 68, 68, 0.2)', 
                                   line=dict(color=THEME['crit'], width=2)))
     
-    fig.update_layout(template="plotly_white", margin=dict(l=30,r=30,t=30,b=20), height=250,
-                      polar=dict(radialaxis=dict(visible=False, range=[0, 4])))
-    return fig
-
-def plot_attractor(df, curr_idx):
-    """
-    Poincaré Plot of RR Intervals (HRV).
-    Visualizes Biological Complexity.
-    """
-    data = df['HR'].iloc[max(0, curr_idx-120):curr_idx].values
-    if len(data) < 2: return go.Figure()
-    
-    # RR interval approx = 60000 / HR
-    rr = 60000 / data
-    rr_t = rr[:-1]
-    rr_t1 = rr[1:]
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=rr_t, y=rr_t1, mode='markers', 
-                             marker=dict(color=THEME['text'], size=4, opacity=0.6)))
-    
-    # Identity line
-    fig.add_trace(go.Scatter(x=[min(rr), max(rr)], y=[min(rr), max(rr)], 
-                             mode='lines', line=dict(color='#cbd5e1', dash='dot')))
-    
-    fig.update_layout(template="plotly_white", margin=dict(l=10,r=10,t=30,b=10), height=250,
-                      title="<b>HRV Attractor (Complexity)</b>",
-                      xaxis=dict(title="RR(n) ms", showgrid=False), 
-                      yaxis=dict(title="RR(n+1) ms", showgrid=False), showlegend=False)
-    return fig
-
-def plot_hemo_phenotype(df, curr_idx):
-    """
-    CPO vs Lactate: The Hemodynamic-Metabolic Coupling.
-    """
-    data = df.iloc[max(0, curr_idx-120):curr_idx]
-    
-    fig = go.Figure()
-    
-    # Quadrants
-    fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=10, fillcolor="rgba(239,68,68,0.1)", line_width=0)
-    fig.add_annotation(x=0.3, y=6, text="CRITICAL<br>MISMATCH", font=dict(color=THEME['crit'], size=10), showarrow=False)
-    
-    fig.add_trace(go.Scatter(x=data['CPO'], y=data['Lactate'], mode='lines', 
-                             line=dict(color=THEME['subtext'], dash='dot')))
-    
-    # Current
-    cur = data.iloc[-1]
-    fig.add_trace(go.Scatter(x=[cur['CPO']], y=[cur['Lactate']], mode='markers', 
-                             marker=dict(color=THEME['hemo'], size=12)))
-    
-    fig.update_layout(template="plotly_white", margin=dict(l=10,r=10,t=30,b=10), height=250,
-                      title="<b>Perfusion Phenotype</b>",
-                      xaxis=dict(title="Cardiac Power (W)", range=[0, 1.5]), 
-                      yaxis=dict(title="Lactate (mmol/L)", range=[0, 10]), showlegend=False)
+    fig.update_layout(template="plotly_white", margin=dict(l=40,r=40,t=40,b=20), height=300,
+                      polar=dict(radialaxis=dict(visible=True, range=[0, 4])), showlegend=False,
+                      title=f"<b>SOFA Component Analysis (Total: {sofa_score})</b>")
     return fig
 
 # ==========================================
@@ -354,55 +349,50 @@ def plot_hemo_phenotype(df, curr_idx):
 
 st.markdown(STYLING, unsafe_allow_html=True)
 
-# --- SIDEBAR (DATA SOURCES) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("TITAN | Sentinel")
-    st.caption("Evidence-Based Clinical Decision Support")
+    st.markdown("### ⚙️ Simulation Context")
+    scenario = st.selectbox("Patient Profile", 
+                           ["Healthy Baseline", "Compensated Sepsis", "Septic Shock"])
     
-    st.markdown("### 🔌 Data Stream Source")
-    scenario = st.selectbox("Simulate Patient Profile", 
-                           ["Healthy Baseline", "Compensated Sepsis (Occult)", "Vasoplegic Shock", "Cardiogenic Shock"])
-    
-    st.markdown("### 🏥 Manual Lab Entry")
-    st.caption("Override simulaton with real values:")
-    in_lac = st.number_input("Lactate (mmol/L)", 0.0, 20.0, 0.0)
-    in_creat = st.number_input("Creatinine (mg/dL)", 0.0, 10.0, 0.0)
+    st.markdown("### 🫁 Ventilator Settings")
+    fi_o2 = st.slider("FiO2 (%)", 21, 100, 40, 5) / 100.0
     
     curr_time = st.slider("Observation Window (min)", 60, 360, 360)
 
 # --- ENGINE ---
-# 1. Ingest Data
-df = generate_measurable_data(scenario, mins=360)
+# Ingest Data
+df = simulate_complex_physiology(scenario, fi_o2, mins=360)
 
-# 2. Apply Manual Overrides (if entered)
-if in_lac > 0: df['Lactate'].iloc[-1] = in_lac
-if in_creat > 0: df['Creatinine'].iloc[-1] = in_creat
-# Re-calculate SOFA with overrides
-row = df.iloc[curr_time-1]
-sofa = ClinicalCalculator.calculate_sofa(row["PaO2"], row["Platelets"], row["Bilirubin"], row["MAP"], row["GCS"], row["Creatinine"], row["Urine"])
+# Slice
+idx = curr_time - 1
+row = df.iloc[idx]
+prev_row = df.iloc[idx-15]
+
+# Metrics
+sofa = int(row["SOFA"])
 mortality = 1 / (1 + np.exp(-(-6.0 + 0.3*sofa + 0.25*row['Lactate']))) * 100
 
-prev_row = df.iloc[curr_time-15]
-
 # --- 1. PROGNOSTIC HEADER ---
-# Logic: Triage based on SOFA + Lactate Kinetics
-sofa_delta = sofa - ClinicalCalculator.calculate_sofa(prev_row["PaO2"], prev_row["Platelets"], prev_row["Bilirubin"], prev_row["MAP"], prev_row["GCS"], prev_row["Creatinine"], prev_row["Urine"])
-sofa_trend = "WORSENING" if sofa_delta > 0 else "STABLE"
+status_txt = "STABLE"
+action_txt = "Standard Monitoring"
+style = "b-ok"
 
-alert_style = "b-ok"
-status_msg = "COMPENSATED"
-if sofa >= 2: 
-    alert_style = "b-warn"
-    status_msg = "ORGAN DYSFUNCTION"
-if sofa >= 6 or row['MAP'] < 65: 
-    alert_style = "b-crit"
-    status_msg = "MULTI-ORGAN FAILURE"
+if row['NE_Dose'] > 0:
+    status_txt = "VASOPRESSOR DEPENDENT"
+    action_txt = f"Current NE Dose: {row['NE_Dose']:.2f} mcg/kg/min"
+    style = "b-crit"
+elif sofa >= 2:
+    status_txt = "ORGAN DYSFUNCTION"
+    action_txt = "Assess Sepsis Bundle Compliance"
+    style = "b-warn"
 
 st.markdown(f"""
-<div class="banner {alert_style}">
+<div class="banner {style}">
     <div>
-        <div style="font-size:1.2rem; font-weight:800;">STATUS: {status_msg}</div>
-        <div style="font-weight:400; font-size:0.9rem;">SOFA Trend: {sofa_trend} ({sofa_delta:+.0f})</div>
+        <div style="font-size:1.2rem; font-weight:800;">STATUS: {status_txt}</div>
+        <div style="font-weight:400; font-size:0.9rem;">{action_txt}</div>
     </div>
     <div style="text-align:right;">
         <div style="font-size:0.8rem; opacity:0.8;">MORTALITY RISK</div>
@@ -411,8 +401,8 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. SOFA & VITAL TILES ---
-c_sofa, c_kpi = st.columns([1, 4])
+# --- 2. SOFA & VITALS ---
+c_sofa, c_kpi = st.columns([1, 3])
 
 with c_sofa:
     st.markdown(f"""
@@ -426,67 +416,46 @@ with c_sofa:
 with c_kpi:
     k1, k2, k3, k4 = st.columns(4)
     
-    def kpi_tile(col, lbl, val, unit, color, df_col, lower, upper):
-        d = val - prev_row[df_col]
-        color_val = THEME["crit"] if (val < lower or val > upper) else THEME["text"]
+    def kpi_card(col, label, val, unit, color, df_col, limits):
+        delta = val - prev_row[df_col]
+        color_txt = THEME["crit"] if (val < limits[0] or val > limits[1]) else THEME["text"]
         with col:
             st.markdown(f"""
             <div class="kpi-card" style="border-top: 3px solid {color}">
-                <div class="kpi-lbl">{lbl}</div>
-                <div class="kpi-val" style="color:{color_val}">{val:.1f}<span class="kpi-unit">{unit}</span></div>
-                <div style="font-size:0.8rem; font-weight:600; color:{THEME['subtext']}">{d:+.1f} (15m)</div>
+                <div class="kpi-lbl">{label}</div>
+                <div class="kpi-val" style="color:{color_txt}">{val:.2f} <span class="kpi-unit">{unit}</span></div>
+                <div style="font-size:0.8rem; font-weight:600; color:{THEME['subtext']}">{delta:+.2f}</div>
             </div>
             """, unsafe_allow_html=True)
-            st.plotly_chart(plot_sparkline_spc(df.iloc[:curr_time], df_col, color, lower, upper), 
+            st.plotly_chart(plot_sparkline_spc(df.iloc[:curr_time], df_col, color, limits[0], limits[1]), 
                             use_container_width=True, config={'displayModeBar': False})
-            
-    kpi_tile(k1, "MAP", row['MAP'], "mmHg", THEME["hemo"], 'MAP', 65, 120)
-    kpi_tile(k2, "Lactate", row['Lactate'], "mmol/L", THEME["meta"], 'Lactate', 0, 2.0)
-    kpi_tile(k3, "Cardiac Power", row['CPO'], "W", THEME["hemo"], 'CPO', 0.6, 2.0)
-    kpi_tile(k4, "Creatinine", row['Creatinine'], "mg/dL", THEME["renal"], 'Creatinine', 0, 1.2)
 
-# --- 3. CHAOS & COMPLEXITY ROW ---
-st.markdown('<div class="section-head">🧬 CHAOS THEORY (BIOLOGICAL VARIABILITY)</div>', unsafe_allow_html=True)
-c_chaos1, c_chaos2, c_chaos3 = st.columns([1, 2, 1])
+    kpi_card(k1, "MAP", row['MAP'], "mmHg", THEME["hemo"], "MAP", (65, 110))
+    kpi_card(k2, "NE Dose", row['NE_Dose'], "mcg/kg", THEME["hemo"], "NE_Dose", (-0.01, 0.05)) # Upper limit warning
+    kpi_card(k3, "PaO2/FiO2", row['PaFi'], "ratio", THEME["resp"], "PaFi", (300, 600))
+    kpi_card(k4, "Creatinine", row['Creatinine'], "mg/dL", THEME["renal"], "Creatinine", (0, 1.2))
 
-with c_chaos1:
-    st.markdown("**Entropy Index**")
-    st.caption("Lower entropy = Loss of physiological reserve.")
-    val = row['Entropy']
-    col_ent = THEME['ok'] if val > 0.8 else THEME['crit']
-    st.markdown(f"<h1 style='color:{col_ent}'>{val:.2f}</h1>", unsafe_allow_html=True)
-    st.progress(min(1.0, max(0.0, val)))
+# --- 3. ORGAN SYSTEMS ---
+st.markdown('<div class="section-head">Multi-System Organ Failure Analysis</div>', unsafe_allow_html=True)
 
-with c_chaos2:
-    st.plotly_chart(plot_attractor(df, curr_time), use_container_width=True, config={'displayModeBar': False})
+col_a, col_b = st.columns([1, 1])
 
-with c_chaos3:
-    st.info("""
-    **Interpreting the Attractor:**
-    *   **Cloud (Fuzzy):** Healthy Chaos. System is adaptable.
-    *   **Line (Strict):** De-complexification. System is rigid/failing.
-    *   **Implication:** Low entropy precedes hypotension in sepsis.
+with col_a:
+    st.plotly_chart(plot_sofa_radar(row, sofa), use_container_width=True, config={'displayModeBar': False})
+
+with col_b:
+    st.plotly_chart(plot_organ_kinetics(df, curr_time), use_container_width=True, config={'displayModeBar': False})
+
+col_c, col_d = st.columns([1, 1])
+
+with col_c:
+    st.plotly_chart(plot_respiratory_status(df, curr_time), use_container_width=True, config={'displayModeBar': False})
+    
+with col_d:
+    st.info(f"""
+    **Current Physiology Status (T={curr_time} min)**
+    *   **Cardiovascular:** {'Vasopressor Dependent' if row['NE_Dose'] > 0 else 'Stable'}. MAP {row['MAP']:.0f} mmHg.
+    *   **Respiratory:** P/F Ratio {row['PaFi']:.0f} ({'ARDS' if row['PaFi'] < 300 else 'Normal'}).
+    *   **Renal:** Creatinine {row['Creatinine']:.2f} mg/dL (Kinetic rise).
+    *   **Hematologic:** Platelets {row['Platelets']:.0f} K/uL.
     """)
-
-# --- 4. ADVANCED HEMODYNAMICS ROW ---
-st.markdown('<div class="section-head">🫀 HEMODYNAMIC & ORGAN FAILURE DYNAMICS</div>', unsafe_allow_html=True)
-c_hemo1, c_hemo2 = st.columns(2)
-
-with c_hemo1:
-    st.markdown("**Cardiac Power vs. Metabolic Cost**")
-    st.caption("Is the heart generating enough power (Watts) to clear Lactate?")
-    st.plotly_chart(plot_hemo_phenotype(df, curr_time), use_container_width=True, config={'displayModeBar': False})
-
-with c_hemo2:
-    st.markdown("**Organ Failure Topology (SOFA Breakdown)**")
-    st.caption("Visualizes which systems are driving the risk.")
-    st.plotly_chart(plot_sofa_radar(row), use_container_width=True, config={'displayModeBar': False})
-
-# --- DISCLAIMER ---
-st.markdown(f"""
-<div style="background:{THEME['bg']}; color:{THEME['subtext']}; font-size:0.8rem; text-align:center; padding:20px; border-top:1px solid #e2e8f0; margin-top:40px;">
-    <strong>TITAN PROGNOSTIC ENGINE v5.0</strong><br>
-    Algorithm: Logistic Regression (Mortality) + Fractal Dimension Analysis (Entropy).<br>
-    Validated against Sepsis-3 Criteria guidelines. For investigational use only.
-</div>
-""", unsafe_allow_html=True)
