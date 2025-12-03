@@ -290,6 +290,7 @@ class PatientSimulator:
         hb = 8.0 if "Trauma" in case_id else 12.0
         do2i, vo2i, o2er, lactate = MetabolicDynamics.simulate_metabolism(ci_f, hb, spo2, self.mins, p['vo2_stress'])
         
+        # Guardrail: Clean NaNs
         df = pd.DataFrame({
             "Time": self.t, "HR": hr_f, "MAP": map_f, "CI": ci_f, "SVRI": svri_f,
             "CO": ci_f * bsa, "SVR": svri_f / bsa,
@@ -300,7 +301,7 @@ class PatientSimulator:
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS (KEYS ENABLED)
+# 5. VISUALIZATION FUNCTIONS (LABELED)
 # ==========================================
 def plot_sparkline(data, color, key):
     fig = px.line(x=np.arange(len(data)), y=data)
@@ -311,31 +312,41 @@ def plot_sparkline(data, color, key):
 def plot_bayes_bars(probs, key):
     fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
     fig.update_layout(
-        margin=dict(l=0,r=0,t=0,b=0), height=100, 
-        xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]),
-        yaxis=dict(title=None)
+        margin=dict(l=0,r=0,t=20,b=0), height=120, 
+        xaxis=dict(showticklabels=True, title="Likelihood [%]", range=[0, 100]),
+        yaxis=dict(title=None),
+        title=dict(text="P(Shock State | CI, SVR)", font=dict(size=12, color=THEME['text_muted']))
     )
     return fig
 
 def plot_3d_attractor(df, key):
     recent = df.iloc[-60:]
-    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis'), line=dict(width=2))])
+    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], 
+                                       mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis', showscale=False), 
+                                       line=dict(width=2, color='rgba(50,50,50,0.5)'), name="Physiologic State")])
     fig.update_layout(
         scene=dict(
             xaxis_title='Power [W]', 
-            yaxis_title='SVRI [dyn·s·cm⁻⁵·m²]', 
-            zaxis_title='Lactate [mmol/L]'
+            yaxis_title='SVRI [dyn·s·cm⁻⁵]', 
+            zaxis_title='Lactate [mM]'
         ), 
-        margin=dict(l=0, r=0, b=0, t=0), height=250, title="3D Attractor Phase Space"
+        margin=dict(l=0, r=0, b=0, t=25), height=250, 
+        title=dict(text="3D Hemodynamic Phase Space (Color=Time)", font=dict(size=12, color=THEME['text_muted']))
     )
     return fig
 
 def plot_chaos_attractor(df, key):
     hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0)
     rr = 60000 / hr_safe
-    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color='teal', size=4, opacity=0.6), name="R-R Interval"))
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color='teal', size=4, opacity=0.6), name="R-R Interval"))
+    # Identity line
+    min_rr, max_rr = rr.min(), rr.max()
+    fig.add_trace(go.Scatter(x=[min_rr, max_rr], y=[min_rr, max_rr], mode='lines', line=dict(dash='dot', color='gray'), name="Line of Identity"))
+    
     fig.update_layout(
-        title="Chaos (Poincaré Plot)", height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        title=dict(text="Poincaré Plot (HRV Complexity)", font=dict(size=12, color=THEME['text_muted'])),
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
         xaxis_title="RR(n) [ms]", yaxis_title="RR(n+1) [ms]", showlegend=False
     )
     return fig
@@ -344,11 +355,13 @@ def plot_spectral_analysis(df, key):
     # Fix: convert to numpy to avoid scipy slicing KeyError
     data = df['HR'].iloc[-120:].to_numpy()
     f, Pxx = welch(data, fs=1/60)
-    fig = px.line(x=f, y=Pxx, title="Spectral HRV Analysis")
-    fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF"); fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF")
+    fig = px.line(x=f, y=Pxx)
+    fig.add_vline(x=0.04, line_dash="dot", annotation_text="Low Freq (Symp)"); 
+    fig.add_vline(x=0.15, line_dash="dot", annotation_text="High Freq (Vagal)")
     fig.update_layout(
+        title=dict(text="Spectral HRV Analysis (Autonomic Tone)", font=dict(size=12, color=THEME['text_muted'])),
         height=200, margin=dict(l=20,r=20,t=30,b=20),
-        xaxis_title="Frequency [Hz]", yaxis_title="Power [ms²/Hz]"
+        xaxis_title="Frequency [Hz]", yaxis_title="Power Density [ms²/Hz]"
     )
     return fig
 
@@ -356,10 +369,11 @@ def plot_monte_carlo_fan(df, p10, p50, p90, key):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="History", line=dict(color=THEME['text_main'])))
     fx = np.arange(30, 60)
-    fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0), name="80% Conf. Interval"))
-    fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median Forecast"))
+    fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0), name="80% CI"))
+    fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median"))
     fig.update_layout(
-        height=200, title="Monte Carlo Forecast (MAP)", margin=dict(l=20,r=20,t=30,b=20),
+        height=200, title=dict(text="Stochastic Forecast (MAP)", font=dict(size=12, color=THEME['text_muted'])), 
+        margin=dict(l=20,r=20,t=30,b=20),
         xaxis_title="Time [min]", yaxis_title="MAP [mmHg]", legend=dict(orientation="h", y=1.1)
     )
     return fig
@@ -367,10 +381,18 @@ def plot_monte_carlo_fan(df, p10, p50, p90, key):
 def plot_hemodynamic_profile(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
-    fig.add_hline(y=2000, line_dash="dot", annotation_text="Vasoconstriction"); fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow")
-    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis'), name="State"))
+    # Clinical zones
+    fig.add_shape(type="rect", x0=0, x1=2.2, y0=2000, y1=4000, fillcolor="rgba(255,0,0,0.1)", line_width=0)
+    fig.add_annotation(x=1.0, y=3000, text="Cold/Wet", showarrow=False, font=dict(size=10))
+    
+    fig.add_shape(type="rect", x0=2.2, x1=10, y0=0, y1=1200, fillcolor="rgba(0,0,255,0.1)", line_width=0)
+    fig.add_annotation(x=4.0, y=600, text="Warm/Dry", showarrow=False, font=dict(size=10))
+
+    fig.add_hline(y=2000, line_dash="dot"); fig.add_vline(x=2.2, line_dash="dot")
+    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis', showscale=False), name="Patient State"))
     fig.update_layout(
-        title="Pump vs Pipes (Forrester Proxy)", height=200, margin=dict(l=20,r=20,t=30,b=20),
+        title=dict(text="Pump vs Pipes (Forrester)", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20),
         xaxis_title="Cardiac Index [L/min/m²]", yaxis_title="SVRI [dyn·s·cm⁻⁵·m²]"
     )
     return fig
@@ -379,9 +401,11 @@ def plot_phase_space(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=15, fillcolor="rgba(255,0,0,0.1)", line_width=0)
-    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered'), name="Trajectory"))
+    fig.add_annotation(x=0.3, y=8, text="UNCOUPLING", showarrow=False, font=dict(color='red', size=10))
+    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered', showscale=False), name="Trajectory"))
     fig.update_layout(
-        title="Hemo-Metabolic Coupling", height=200, margin=dict(l=20,r=20,t=30,b=20),
+        title=dict(text="Hemo-Metabolic Coupling", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20),
         xaxis_title="Cardiac Power [W]", yaxis_title="Lactate [mmol/L]"
     )
     return fig
@@ -391,10 +415,11 @@ def plot_counterfactual(df, drugs, case, bsa, peep, key):
     base = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21}
     df_b = sim.run(case, base, 0, bsa, peep)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="With Intervention", line=dict(color=THEME['ok'])))
-    fig.add_trace(go.Scatter(y=df_b['MAP'], name="Natural History", line=dict(dash='dot', color=THEME['crit'])))
+    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="Intervention", line=dict(color=THEME['ok'])))
+    fig.add_trace(go.Scatter(y=df_b['MAP'], name="Natural Hx", line=dict(dash='dot', color=THEME['crit'])))
     fig.update_layout(
-        title="Counterfactual Projection", height=200, margin=dict(l=20,r=20,t=30,b=20),
+        title=dict(text="Intervention Projection", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20),
         xaxis_title="Time [min]", yaxis_title="MAP [mmHg]", legend=dict(orientation="h", y=1.1)
     )
     return fig
@@ -436,7 +461,7 @@ sim = PatientSimulator(mins=res_mins)
 drugs = {'norepi':norepi, 'vaso':vaso, 'dobu':dobu, 'bb':bb, 'fio2':fio2}
 df = sim.run(case_id, drugs, st.session_state['fluids'], bsa, peep)
 
-# --- ANALYTICS (Computed once) ---
+# --- ANALYTICS (Optimization: Compute once) ---
 df = AI_Services.detect_anomalies(df)
 probs = AI_Services.predict_shock_bayes(df.iloc[-1])
 sugg, conf = AI_Services.rl_advisor(df.iloc[-1], drugs)
@@ -483,7 +508,7 @@ def render(d_slice):
                 st.metric(l, f"{v:.1f}")
                 st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c, ix), use_container_width=True, key=f"spark_{i}_{ix}")
 
-        # ZONE C: ADVANCED PHYSICS
+        # ZONE C: ADVANCED PHYSICS (Restored)
         st.markdown('<div class="zone-header">ZONE C: PHASE SPACE & COMPLEXITY</div>', unsafe_allow_html=True)
         b1, b2, b3 = st.columns(3)
         with b1: st.plotly_chart(plot_3d_attractor(d_slice, ix), use_container_width=True, key=f"3d_{ix}")
@@ -502,6 +527,7 @@ def render(d_slice):
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['SpO2'], name="SpO2", line=dict(color=THEME['resp'])), row=3, col=1)
         fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white")
         
+        # Telemetry Labels
         fig.update_yaxes(title_text="MAP [mmHg]", row=1, col=1)
         fig.update_yaxes(title_text="CPO [W]", row=2, col=1)
         fig.update_yaxes(title_text="SpO2 [%]", row=3, col=1)
@@ -510,6 +536,7 @@ def render(d_slice):
         st.plotly_chart(fig, use_container_width=True, key=f"tele_{ix}")
 
 if live_mode:
+    # Render loop for Real-time Simulation
     for i in range(max(10, res_mins-60), res_mins):
         render(df.iloc[:i])
         time.sleep(0.1)
