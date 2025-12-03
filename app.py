@@ -25,18 +25,29 @@ THEME = {
     "crit": "#ef4444", "warn": "#f59e0b", "ok": "#10b981"
 }
 
+# UPDATED CSS: Uses System Fonts (No External URLs)
 STYLING = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap');
-.stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f172a; }
+/* Base Styles using System Fonts */
+.stApp { 
+    background-color: #f8fafc; 
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #0f172a; 
+}
 
 /* KPI Card */
 .kpi-card {
     background: white; border: 1px solid #cbd5e1; border-radius: 8px;
     padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 8px;
 }
-.kpi-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
-.kpi-val { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
+.kpi-lbl { 
+    font-size: 0.7rem; font-weight: 700; color: #64748b; 
+    text-transform: uppercase; 
+}
+.kpi-val { 
+    font-family: "Courier New", Courier, monospace; 
+    font-size: 1.6rem; font-weight: 700; line-height: 1.1; 
+}
 .kpi-unit { font-size: 0.8rem; color: #94a3b8; margin-left: 2px; }
 
 /* Alert Banner */
@@ -71,7 +82,7 @@ SAFETY_DISCLAIMER = """
 # ==========================================
 
 @dataclass
-class PhysiologicalParams:
+class PatientConfig:
     """
     Centralized parameter store for the Digital Twin.
     Allows for scenario injection and sensitivity analysis.
@@ -97,7 +108,7 @@ class PhysiologyEngine:
     """
     Advanced 0-D Cardiovascular Model (Windkessel-Baroreflex Coupled).
     """
-    def __init__(self, params: PhysiologicalParams, preload=12.0, contractility=1.0, afterload=1.0):
+    def __init__(self, params: PatientConfig, preload=12.0, contractility=1.0, afterload=1.0):
         self.p = params
         self.preload = float(preload)
         self.contractility = float(contractility)
@@ -200,7 +211,7 @@ class PhysiologyEngine:
             "Lac_Gen": lac_gen, "Preload_Status": eff_pre
         }
 
-def simulate_clinical_data(params: PhysiologicalParams, mins=720, seed=42):
+def simulate_clinical_data(params: PatientConfig, mins=720, seed=42):
     """
     Runs full simulation. Optimized with pre-calculated vectors.
     """
@@ -316,10 +327,15 @@ class ChartFactory:
         layout = go.Layout(
             template="plotly_white", margin=dict(l=10, r=10, t=30 if title else 10, b=10),
             height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter, sans-serif", color=THEME["text"])
+            font=dict(family="sans-serif", color=THEME["text"])
         )
         if title: layout.title = dict(text=f"<b>{title}</b>", font=dict(size=14))
         return layout
+
+    @staticmethod
+    def hex_to_rgba(h, alpha):
+        h = h.lstrip('#')
+        return f"rgba({int(h[0:2],16)}, {int(h[2:4],16)}, {int(h[4:6],16)}, {alpha})"
 
     @staticmethod
     def sparkline(df: pd.DataFrame, col: str, color: str, limits: Tuple[float, float]) -> go.Figure:
@@ -340,7 +356,7 @@ class ChartFactory:
                       fillcolor="rgba(0,0,0,0.04)", line_width=0, layer="below")
         
         # Trend
-        rgba = f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.1)"
+        rgba = ChartFactory.hex_to_rgba(color, 0.1)
         fig.add_trace(go.Scatter(
             x=data.index, y=data.values, mode='lines', 
             line=dict(color=color, width=2.5), fill='tozeroy', fillcolor=rgba, hoverinfo='skip'
@@ -367,7 +383,7 @@ class ChartFactory:
         fig = go.Figure()
         
         def add_band(name, color, data, dash=None):
-            rgba = f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},0.15)"
+            rgba = ChartFactory.hex_to_rgba(color, 0.15)
             fig.add_trace(go.Scatter(
                 x=np.concatenate([t, t[::-1]]), y=np.concatenate([data["upper"], data["lower"][::-1]]),
                 fill='toself', fillcolor=rgba, line=dict(width=0), showlegend=False, hoverinfo='skip'
@@ -403,7 +419,7 @@ class ChartFactory:
         ]
         
         for x0, y0, x1, y1, col, txt in zones:
-            rgba = f"rgba({int(col[1:3],16)},{int(col[3:5],16)},{int(col[5:7],16)},0.1)"
+            rgba = ChartFactory.hex_to_rgba(col, 0.1)
             fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1, fillcolor=rgba, line_width=0, layer="below")
             fig.add_annotation(x=(x0+x1)/2, y=(y0+y1)/2, text=txt, font=dict(color=col, size=10, weight="bold"), showarrow=False)
 
@@ -412,7 +428,7 @@ class ChartFactory:
                                  marker=dict(color="#0f172a", size=14, symbol="cross", line=dict(width=2, color="white"))))
 
         fig.update_layout(ChartFactory._clean_layout(height=280, title="Hemodynamic Phenotype"))
-        fig.update_xaxes(title="Cardiac Index", range=[1.0, 5.5], gridcolor=THEME["grid"])
+        fig.update_xaxes(title="Cardiac Index (L/min/m²)", range=[1.0, 5.5], gridcolor=THEME["grid"])
         fig.update_yaxes(title="MAP (mmHg)", range=[30, 100], gridcolor=THEME["grid"])
         return fig
 
@@ -434,7 +450,7 @@ class ChartFactory:
         fig = go.Figure()
         fig.add_trace(go.Scatterpolar(r=[0.2]*6, theta=theta, fill='none', line=dict(color='lightgrey', dash='dot')))
         fig.add_trace(go.Scatterpolar(r=r, theta=theta, fill='toself', 
-                                      fillcolor=f"rgba({int(THEME['crit'][1:3],16)},{int(THEME['crit'][3:5],16)},{int(THEME['crit'][5:7],16)},0.2)",
+                                      fillcolor=ChartFactory.hex_to_rgba(THEME['crit'], 0.2),
                                       line=dict(color=THEME["crit"], width=2)))
         
         fig.update_layout(ChartFactory._clean_layout(height=250, title="Multi-Organ SOFA Risk"))
@@ -442,35 +458,32 @@ class ChartFactory:
         return fig
 
 # ==========================================
-# 4. APP LOGIC
+# 5. MAIN APP EXECUTION
 # ==========================================
 
+# A. Styles
 st.markdown(STYLING, unsafe_allow_html=True)
 
-# --- SIDEBAR ---
+# B. Sidebar Inputs
 with st.sidebar:
-    st.header("TITAN | Configuration")
+    st.header("TITAN | Control")
+    curr_time = st.slider("Timeline", 60, 720, 720)
     
-    st.markdown("### 1. Patient Profile")
-    shock = st.selectbox("Shock Phenotype", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
-    hb = st.slider("Hemoglobin (g/dL)", 6.0, 15.0, 12.0, 0.5)
-    
-    st.markdown("### 2. Physiology")
+    st.markdown("### ⚙️ Physiology")
+    shock = st.selectbox("Shock Type", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
+    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5)
     map_target = st.number_input("Target MAP (mmHg)", 55, 85, 65)
-    hrv = st.slider("HR Variability", 0.0, 0.1, 0.02, 0.01)
     
-    st.markdown("### 3. Simulation")
-    curr_time = st.slider("Timeline (min)", 60, 720, 720)
-    
-    config = PatientConfig(shock_type=shock, hb=hb, map_target=map_target, hr_variability=hrv)
+    config = PatientConfig(shock_type=shock, hb=hb, map_target=map_target)
 
-# --- SIMULATION ---
+# C. Simulation
+# Not cached to allow real-time param updates
 df = simulate_clinical_data(config, mins=720, seed=42)
 idx = curr_time - 1
 row = df.iloc[idx]
 prev = df.iloc[idx-15]
 
-# --- 1. HEADER ---
+# D. Header Logic
 status_msg = "STABLE"
 action_msg = "Continue Monitoring"
 banner_style = "b-ok"
@@ -488,7 +501,7 @@ if row["MAP"] < map_target:
 st.markdown(f"""
 <div class="banner {banner_style}">
     <div>
-        <div style="font-weight:800; font-size:1.2rem;">{status_msg}</div>
+        <div style="font-weight:800; font-size:1.25rem;">{status_msg}</div>
         <div style="color:#64748b; font-weight:500;">Target: MAP > {map_target} • Lactate < 2.0</div>
     </div>
     <div style="text-align:right;">
@@ -498,34 +511,34 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. KPI STRIP ---
+# E. KPI Strip
 cols = st.columns(6)
 
-def render_kpi(col, label, val, unit, color, df_col, t_low, t_high):
+def render_kpi(col, label, val, unit, color, df_col, t_low, t_high, key_id):
     delta = val - prev[df_col]
     color_trend = THEME["crit"] if (val < t_low or val > t_high) else THEME["ok"]
     with col:
         st.markdown(f"""
         <div class="kpi-card" style="border-top:3px solid {color}">
-            <div class="kpi-lbl">{label}</div>
-            <div class="kpi-val" style="color:{color}">{val:.1f} <span class="kpi-unit">{unit}</span></div>
+            <div class="kpi-label">{label}</div>
+            <div class="kpi-value">{val:.1f} <span class="kpi-unit">{unit}</span></div>
             <div class="kpi-trend" style="color:{color_trend}">
                 {delta:+.1f} <span style="color:#94a3b8; font-weight:400; font-size:0.7rem; margin-left:4px">15m</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
         st.plotly_chart(ChartFactory.sparkline(df.iloc[:idx+1], df_col, color, (t_low, t_high)), 
-                        use_container_width=True, config={'displayModeBar': False})
+                        use_container_width=True, config={'displayModeBar': False}, key=key_id)
 
-render_kpi(cols[0], "MAP", row["MAP"], "mmHg", THEME["map"], "MAP", map_target, 110)
-render_kpi(cols[1], "Cardiac Index", row["CI"], "L/min", THEME["ci"], "CI", 2.5, 4.2)
-render_kpi(cols[2], "SVR Index", row["SVRI"], "dyn", THEME["svr"], "SVRI", 800, 1200)
-render_kpi(cols[3], "O2 Extract", row["O2ER"]*100, "%", THEME["do2"], "O2ER", 20, 30)
-render_kpi(cols[4], "SOFA Score", float(row["SOFA"]), "pts", "#475569", "SOFA", 0, 2)
-render_kpi(cols[5], "Urine Out", row["Urine"], "mL/kg", THEME["hr"], "Urine", 0.5, 2.0)
+render_kpi(cols[0], "MAP", row["MAP"], "mmHg", THEME["map"], "MAP", map_target, 110, "k1")
+render_kpi(cols[1], "Cardiac Index", row["CI"], "L/min", THEME["ci"], "CI", 2.5, 4.2, "k2")
+render_kpi(cols[2], "SVR Index", row["SVRI"], "dyn", THEME["svr"], "SVRI", 800, 1200, "k3")
+render_kpi(cols[3], "Stroke Vol", row["PP"], "mL", THEME["hr"], "PP", 35, 60, "k4")
+render_kpi(cols[4], "DO2 Index", row["DO2I"], "mL/m²", THEME["do2"], "DO2I", 400, 600, "k5")
+render_kpi(cols[5], "Lactate", row["Lactate"], "mmol", THEME["crit"], "Lactate", 0, 2.0, "k6")
 
-# --- 3. PREDICTIVE & DIAGNOSTIC ---
-st.markdown('<div class="section-head">🔮 PREDICTIVE DECISION SUPPORT</div>', unsafe_allow_html=True)
+# F. Predictive & Organ Panels
+st.markdown('<div class="section-header">🔮 PREDICTIVE DECISION SUPPORT</div>', unsafe_allow_html=True)
 c1, c2 = st.columns([1, 1])
 
 engine = PhysiologyEngine(config)
@@ -536,18 +549,18 @@ with c1:
 with c2:
     st.plotly_chart(ChartFactory.predictive_horizon(futures, map_target), use_container_width=True, config={'displayModeBar': False})
 
-# --- 4. ORGAN SYSTEM EXPANDER ---
-with st.expander("🫀 COMPREHENSIVE ORGAN STATUS", expanded=True):
-    c3, c4 = st.columns(2)
-    with c3:
-        st.plotly_chart(ChartFactory.organ_radar(df, idx), use_container_width=True, config={'displayModeBar': False})
-    with c4:
-        st.info(f"""
-        **System Status Report:**
-        - **Renal:** {'Oliguria' if row['Urine'] < 0.5 else 'Adequate Output'} ({row['Urine']:.1f} mL/kg/hr)
-        - **Respiratory:** PaO2/FiO2 ratio {row['PaO2_FiO2']:.0f}
-        - **Hematologic:** Platelets {row['Platelets']:.0f} (Simulated)
-        - **Metabolic:** Lactate {row['Lactate']:.1f} mmol/L (Clearance {((prev['Lactate']-row['Lactate'])/prev['Lactate'])*100:.1f}%)
-        """)
+st.markdown('<div class="section-header">🫀 ORGAN SYSTEM SAFETY (SOFA)</div>', unsafe_allow_html=True)
+c3, c4 = st.columns(2)
+
+with c3:
+    st.plotly_chart(ChartFactory.organ_radar(df, idx), use_container_width=True, config={'displayModeBar': False})
+with c4:
+    st.info(f"""
+    **System Status Report:**
+    - **Renal:** {'Oliguria' if row['Urine'] < 0.5 else 'Adequate Output'} ({row['Urine']:.1f} mL/kg/hr)
+    - **Respiratory:** PaO2/FiO2 ratio {row['PaO2_FiO2']:.0f} (Healthy > 400)
+    - **Hematologic:** Platelets {row['Platelets']:.0f} (Simulated)
+    - **Metabolic:** Lactate {row['Lactate']:.1f} mmol/L (Clearance {((prev['Lactate']-row['Lactate'])/prev['Lactate'])*100:.1f}%)
+    """)
 
 st.markdown(SAFETY_DISCLAIMER, unsafe_allow_html=True)
