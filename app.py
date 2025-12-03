@@ -7,16 +7,15 @@ from plotly.subplots import make_subplots
 from scipy.signal import welch
 from scipy.stats import norm
 from sklearn.cluster import KMeans
-from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
 import time
 
 # ==========================================
-# 1. CONFIGURATION & CONSTANTS
+# 1. CONFIGURATION & MEDICAL THEME
 # ==========================================
 st.set_page_config(
-    page_title="TITAN | LEVEL 6 CDS",
+    page_title="TITAN | ULTIMATE COMMAND CENTER",
     layout="wide",
     initial_sidebar_state="expanded",
     page_icon="🧬"
@@ -45,38 +44,29 @@ STYLING = f"""
 """
 
 class CONSTANTS:
-    # Drug Parameters (Potency, Wash-in Time Constant (min), Tolerance Half-life (min))
     DRUG_PK = {
         'norepi': {'svr': 900, 'map': 28, 'co': 0.6, 'tau': 2.0, 'tol': 1440},
         'vaso':   {'svr': 700, 'map': 18, 'co': 0.0, 'tau': 5.0, 'tol': 2880},
-        'dobu':   {'svr': -350, 'map': 2, 'co': 2.8, 'hr': 18, 'tau': 3.0, 'tol': 720}, # Fast tolerance (downregulation)
+        'dobu':   {'svr': -350, 'map': 2, 'co': 2.8, 'hr': 18, 'tau': 3.0, 'tol': 720},
         'bb':     {'svr': 50, 'map': -8, 'co': -1.2, 'hr': -22, 'tau': 4.0, 'tol': 5000}
     }
-    ATM_PRESSURE = 760
-    H2O_PRESSURE = 47
-    R_QUOTIENT = 0.8
-    MAX_PAO2 = 600
-    LAC_PROD_THRESH = 380
-    LAC_CLEAR_RATE = 0.04
-    VCO2_CONST = 200 # mL/min production reference
+    ATM_PRESSURE = 760; H2O_PRESSURE = 47; R_QUOTIENT = 0.8; MAX_PAO2 = 600
+    LAC_PROD_THRESH = 380; LAC_CLEAR_RATE = 0.04; VCO2_CONST = 200
 
 # ==========================================
-# 2. DYNAMICS MODULES (SPLIT ARCHITECTURE)
+# 2. DYNAMICS MODULES (LEVEL 6 ARCHITECTURE)
 # ==========================================
 
 class AutonomicDynamics:
     @staticmethod
     def generate_vitals(mins, p, seed):
-        """Generates base autonomic output (HR, MAP, CI, SVRI) using Brownian Bridge."""
         def noise(n, start, end, vol, s):
             np.random.seed(s)
             t = np.linspace(0, 1, n)
-            # Stress factor: Volatility increases as physiology decompensates (end < start)
             stress = 1.0 + (max(0, start - end) / 20.0)
             dW = np.random.normal(0, np.sqrt(1/n), n)
-            W = np.cumsum(dW)
-            B = start + W - t * (W[-1] - (end - start))
             pink = np.convolve(np.random.normal(0, 0.5, n), np.ones(8)/8, mode='same')
+            B = start + np.cumsum(dW) - t * (np.cumsum(dW)[-1] - (end - start))
             return B + (pink * vol * stress)
 
         hr = noise(mins, p['hr'][0], p['hr'][1], 1.5, seed)
@@ -89,234 +79,124 @@ class AutonomicDynamics:
 class PharmacokineticsEngine:
     @staticmethod
     def apply_pk_pd(map_base, ci_base, hr_base, svri_base, drugs, mins):
-        """Applies Wash-in (Ramp) and Tolerance (Decay) curves."""
         t_vec = np.arange(mins)
-        
         def calculate_effect(drug_name, dose, param):
             if dose <= 0: return np.zeros(mins)
             pk = CONSTANTS.DRUG_PK[drug_name]
             if param not in pk: return np.zeros(mins)
-            
-            max_effect = dose * pk[param]
-            # Wash-in: 1 - exp(-t/tau)
-            wash_in = 1 - np.exp(-t_vec / pk['tau'])
-            # Tolerance: exp(-t/tol)
-            tolerance = np.exp(-t_vec / pk['tol'])
-            
-            return max_effect * wash_in * tolerance
+            max_eff = dose * pk[param]
+            return max_eff * (1 - np.exp(-t_vec / pk['tau'])) * np.exp(-t_vec / pk['tol'])
 
-        # Aggregating effects
-        d_svr = calculate_effect('norepi', drugs['norepi'], 'svr') + \
-                calculate_effect('vaso', drugs['vaso'], 'svr') + \
-                calculate_effect('dobu', drugs['dobu'], 'svr')
-                
-        d_map = calculate_effect('norepi', drugs['norepi'], 'map') + \
-                calculate_effect('vaso', drugs['vaso'], 'map') + \
-                calculate_effect('bb', drugs['bb'], 'map')
-                
-        d_co  = calculate_effect('norepi', drugs['norepi'], 'co') + \
-                calculate_effect('dobu', drugs['dobu'], 'co') + \
-                calculate_effect('bb', drugs['bb'], 'co')
-                
-        d_hr  = calculate_effect('dobu', drugs['dobu'], 'hr') + \
-                calculate_effect('bb', drugs['bb'], 'hr')
+        d_svr = calculate_effect('norepi', drugs['norepi'], 'svr') + calculate_effect('vaso', drugs['vaso'], 'svr') + calculate_effect('dobu', drugs['dobu'], 'svr')
+        d_map = calculate_effect('norepi', drugs['norepi'], 'map') + calculate_effect('vaso', drugs['vaso'], 'map') + calculate_effect('bb', drugs['bb'], 'map')
+        d_co  = calculate_effect('norepi', drugs['norepi'], 'co') + calculate_effect('dobu', drugs['dobu'], 'co') + calculate_effect('bb', drugs['bb'], 'co')
+        d_hr  = calculate_effect('dobu', drugs['dobu'], 'hr') + calculate_effect('bb', drugs['bb'], 'hr')
 
         return (map_base + d_map), (ci_base + d_co), (hr_base + d_hr), (svri_base + d_svr)
 
 class RespiratoryDynamics:
     @staticmethod
     def simulate_gas_exchange(fio2, rr, shunt_base, peep, mins, copd_factor):
-        """
-        Includes Dead Space, V/Q Mismatch, and Alveolar Gas Equation.
-        """
-        # Dead Space Fraction (Vd/Vt)
-        # Normal 0.3. Increases with COPD, Shock (Low perfusion to lung apices).
-        vd_vt = 0.3 * copd_factor
-        if copd_factor > 1.0: vd_vt += 0.1 # COPD penalty
-        
-        # Alveolar Ventilation (VA) approx
-        # PaCO2 = (VCO2 * 0.863) / VA
-        # VA = VE * (1 - Vd/Vt)
-        # VE = RR * Vt (assume Vt = 0.5L)
-        vt = 0.5
-        ve = rr * vt
-        va = ve * (1 - vd_vt)
-        # Prevent division by zero
-        va = np.maximum(va, 2.0)
-        
+        vd_vt = 0.3 * copd_factor + (0.1 if copd_factor > 1.0 else 0)
+        va = np.maximum((rr * 0.5) * (1 - vd_vt), 2.0)
         paco2 = (CONSTANTS.VCO2_CONST * 0.863) / va
-        
-        # Alveolar Gas Eq: PAO2 = FiO2(Patm-PH2O) - PaCO2/R
-        p_ideal = (fio2 * (CONSTANTS.ATM_PRESSURE - CONSTANTS.H2O_PRESSURE)) - (paco2 / CONSTANTS.R_QUOTIENT)
-        p_ideal = np.clip(p_ideal, 0, CONSTANTS.MAX_PAO2)
-        
-        # Shunt & PEEP
-        # PEEP Benefit: Decreases Shunt
+        p_ideal = np.clip((fio2 * (CONSTANTS.ATM_PRESSURE - CONSTANTS.H2O_PRESSURE)) - (paco2 / CONSTANTS.R_QUOTIENT), 0, CONSTANTS.MAX_PAO2)
         shunt_eff = shunt_base * np.exp(-0.06 * peep)
         pao2 = p_ideal * (1 - shunt_eff)
-        
-        # SpO2 Sigmoid
-        pao2_safe = np.maximum(pao2, 0.1)
-        spo2 = 100 / (1 + (23400 / (pao2_safe**3 + 150*pao2_safe)))
-        
+        spo2 = 100 / (1 + (23400 / (np.maximum(pao2, 0.1)**3 + 150*np.maximum(pao2, 0.1))))
         return pao2, paco2, spo2, vd_vt
 
 class MetabolicDynamics:
     @staticmethod
     def simulate_metabolism(ci, hb, spo2, mins):
-        """Calculates Oxygen Delivery, Consumption, Extraction, and Lactate."""
-        # DO2I = CI * Hb * 1.34 * SpO2
         do2i = ci * hb * 1.34 * (spo2/100) * 10
-        
-        # VO2I (Consumption) - Assume ~125 mL/min/m2 resting, changes with stress?
-        # Fixed for now, or proportional to CI in supply-dependency
-        vo2i = np.full(mins, 125.0) 
-        
-        # O2ER (Extraction Ratio)
+        vo2i = np.full(mins, 125.0)
         o2er = vo2i / np.maximum(do2i, 1.0)
-        
-        # Lactate Kinetics
         lactate = np.zeros(mins)
         lac_curr = 1.0
-        
-        # Vectorized lookahead not possible for autoregressive, using loop for logic
-        # Production increases if DO2I < Threshold OR O2ER > 50%
-        prod_stress = np.where((do2i < CONSTANTS.LAC_PROD_THRESH) | (o2er > 0.45), 0.15, 0.0)
-        
+        prod = np.where((do2i < CONSTANTS.LAC_PROD_THRESH) | (o2er > 0.45), 0.15, 0.0)
         for i in range(mins):
-            # Clearance depends on liver flow (CI)
-            clear = CONSTANTS.LAC_CLEAR_RATE * (ci[i] / 3.0) # Normalized to CI=3
-            lac_curr = max(0.5, lac_curr + prod_stress[i] - clear)
+            lac_curr = max(0.5, lac_curr + prod[i] - (CONSTANTS.LAC_CLEAR_RATE * (ci[i] / 3.0)))
             lactate[i] = lac_curr
-            
         return do2i, vo2i, o2er, lactate
 
 # ==========================================
-# 3. ADVANCED ANALYTICS (AI LAYERS)
+# 3. AI & ANALYTICS LAYERS
 # ==========================================
 
-class BayesianClassifier:
+class AI_Services:
     @staticmethod
-    def predict_shock_probs(row):
-        """
-        Calculates posterior probability of shock states using Gaussian Naive Bayes logic.
-        P(Shock|Data) ~ Likelihood * Prior
-        """
-        # Shock Profiles: {Name: {Mean_CI, Mean_SVR, Prior}}
+    def predict_shock_bayes(row):
         profiles = {
             "Cardiogenic": {"CI": 1.8, "SVRI": 2400, "Prior": 0.2},
             "Distributive": {"CI": 4.5, "SVRI": 800,  "Prior": 0.3},
             "Hypovolemic": {"CI": 2.0, "SVRI": 2800, "Prior": 0.2},
             "Stable":      {"CI": 3.0, "SVRI": 1800, "Prior": 0.3}
         }
-        
         scores = {}
-        total_likelihood = 0
-        
+        total = 0
         for name, p in profiles.items():
-            # Likelihood p(Data|State) assuming normal dist
-            # Simplified PDF calculation
-            p_ci = norm.pdf(row['CI'], loc=p['CI'], scale=0.8)
-            p_svr = norm.pdf(row['SVRI'], loc=p['SVRI'], scale=400)
-            
-            likelihood = p_ci * p_svr * p['Prior']
-            scores[name] = likelihood
-            total_likelihood += likelihood
-            
-        # Normalize
-        if total_likelihood == 0: return {k:0.25 for k in profiles}
-        return {k: (v/total_likelihood)*100 for k, v in scores.items()}
+            like = norm.pdf(row['CI'], p['CI'], 0.8) * norm.pdf(row['SVRI'], p['SVRI'], 400)
+            scores[name] = like * p['Prior']
+            total += scores[name]
+        return {k: (v/total)*100 for k, v in scores.items()} if total > 0 else {k:25 for k in profiles}
 
-class ReinforcementAgent:
     @staticmethod
-    def suggest_dose(row, drug_state):
-        """
-        Rule-based policy acting as an RL Agent (Actor-Critic proxy).
-        Target: MAP > 65, CI > 2.2.
-        """
-        map_val = row['MAP']
-        ci_val = row['CI']
-        svr_val = row['SVRI']
-        
-        suggestion = []
-        confidence = 0
-        
-        if map_val < 65:
-            if ci_val < 2.2:
-                # Cold/Wet or Cold/Dry -> Needs Flow + Pressure
-                suggestion.append("Titrate Dobutamine +2.5 mcg")
-                confidence = 85
-            else:
-                # Warm/Vasoplegic -> Needs Vasopressor
-                if svr_val < 1000:
-                    suggestion.append("Increase Norepinephrine +0.05")
-                    confidence = 92
-                else:
-                    suggestion.append("Consider Volume / Blood")
-                    confidence = 60
-        else:
-            if drug_state['norepi'] > 0 and map_val > 75:
-                 suggestion.append("Wean Norepinephrine -0.05")
-                 confidence = 80
-            else:
-                suggestion.append("Maintain Current Therapy")
-                confidence = 99
-                
-        return suggestion[0], confidence
+    def rl_advisor(row, drugs):
+        if row['MAP'] < 65:
+            if row['CI'] < 2.2: return "Titrate Dobutamine +2.5", 85
+            else: return ("Increase Norepi +0.05" if row['SVRI']<1000 else "Give Fluids"), 90
+        return "Maintain Current", 99
 
-class AnomalyDetector:
     @staticmethod
     def detect_anomalies(df):
-        """
-        Isolation Forest to detect physiologic instability/outliers.
-        """
-        features = ['MAP', 'CI', 'SVRI', 'HR']
-        X = df[features].fillna(0)
-        
-        # Fit model on history
         iso = IsolationForest(contamination=0.05, random_state=42)
-        df['anomaly_score'] = iso.fit_predict(X)
-        # -1 is anomaly, 1 is normal
+        df['anomaly'] = iso.fit_predict(df[['MAP','CI','SVRI']].fillna(0))
         return df
 
+    @staticmethod
+    def monte_carlo_forecast(df, target='MAP', n_sims=50):
+        curr = df[target].iloc[-1]
+        vol = np.std(df[target].iloc[-30:])
+        paths = np.array([curr + np.cumsum(np.random.normal(0, vol, 30)) for _ in range(n_sims)])
+        return np.percentile(paths, 10, axis=0), np.percentile(paths, 50, axis=0), np.percentile(paths, 90, axis=0)
+    
+    @staticmethod
+    def inverse_centroids(df):
+        try:
+            scaler = StandardScaler()
+            X = scaler.fit_transform(df[['CI','SVRI','Lactate']].iloc[-60:])
+            km = KMeans(3, random_state=42).fit(X)
+            ctrs = scaler.inverse_transform(km.cluster_centers_)
+            return [f"C{i+1}: CI={c[0]:.1f}, SVR={c[1]:.0f}" for i,c in enumerate(ctrs)]
+        except: return ["Insufficient Data"]
+
 # ==========================================
-# 4. PATIENT SIMULATOR
+# 4. SIMULATOR
 # ==========================================
 class PatientSimulator:
     def __init__(self, mins=360):
         self.mins = mins
         self.t = np.arange(mins)
-
-    def get_data(self, case_id, drugs, fluids, bsa, peep):
-        # Case Config
+        
+    def run(self, case_id, drugs, fluids, bsa, peep):
         cases = {
-            "65M Post-CABG": {'ci':(2.2,1.8), 'map':(75,55), 'svri':(1800,1400), 'hr':(85,95), 'shunt':0.10, 'liver':0.9, 'copd':1.0},
-            "24F Septic Shock": {'ci':(4.5,5.5), 'map':(65,45), 'svri':(1000,600), 'hr':(110,140), 'shunt':0.15, 'liver':0.8, 'copd':1.0},
-            "82M HFpEF Sepsis": {'ci':(2.0,1.9), 'map':(85,60), 'svri':(2200,1600), 'hr':(90,110), 'shunt':0.20, 'liver':0.6, 'copd':1.5},
-            "50M Trauma": {'ci':(3.0,1.5), 'map':(70,40), 'svri':(2500,3000), 'hr':(100,150), 'shunt':0.05, 'liver':1.0, 'copd':1.0}
+            "65M Post-CABG": {'ci':(2.2,1.8), 'map':(75,55), 'svri':(1800,1400), 'hr':(85,95), 'shunt':0.10, 'copd':1.0},
+            "24F Septic Shock": {'ci':(4.5,5.5), 'map':(65,45), 'svri':(1000,600), 'hr':(110,140), 'shunt':0.15, 'copd':1.0},
+            "82M HFpEF Sepsis": {'ci':(2.0,1.9), 'map':(85,60), 'svri':(2200,1600), 'hr':(90,110), 'shunt':0.20, 'copd':1.5},
+            "50M Trauma": {'ci':(3.0,1.5), 'map':(70,40), 'svri':(2500,3000), 'hr':(100,150), 'shunt':0.05, 'copd':1.0}
         }
         p = cases[case_id]
-        seed = len(case_id) + 42
+        seed = len(case_id)+42
         
-        # 1. Autonomic
         hr, map_r, ci_r, svri_r, rr = AutonomicDynamics.generate_vitals(self.mins, p, seed)
-        
-        # 2. Fluid Physics
-        ppv_base = 20 if "Trauma" in case_id else 12
-        ppv = ppv_base + (np.sin(self.t/8)*4)
+        ppv = (20 if "Trauma" in case_id else 12) + (np.sin(self.t/8)*4)
         ci_fluid = (fluids/500) * (0.4 if np.mean(ppv)>13 else 0.05)
-        
-        # 3. Pharmacokinetics
-        map_f, ci_f, hr_f, svri_f = PharmacokineticsEngine.apply_pk_pd(map_r, ci_r + ci_fluid, hr, svri_r, drugs, self.mins)
-        
-        # 4. Respiratory
+        map_f, ci_f, hr_f, svri_f = PharmacokineticsEngine.apply_pk_pd(map_r, ci_r+ci_fluid, hr, svri_r, drugs, self.mins)
         pao2, paco2, spo2, vd_vt = RespiratoryDynamics.simulate_gas_exchange(drugs['fio2'], rr, p['shunt'], peep, self.mins, p['copd'])
-        
-        # 5. Metabolic
         hb = 8.0 if "Trauma" in case_id else 12.0
         do2i, vo2i, o2er, lactate = MetabolicDynamics.simulate_metabolism(ci_f, hb, spo2, self.mins)
         
-        # 6. Assembly
         df = pd.DataFrame({
             "Time": self.t, "HR": hr_f, "MAP": map_f, "CI": ci_f, "SVRI": svri_f,
             "CO": ci_f * bsa, "SVR": svri_f / bsa,
@@ -324,89 +204,78 @@ class PatientSimulator:
             "DO2I": do2i, "VO2I": vo2i, "O2ER": o2er, "Vd/Vt": np.full(self.mins, vd_vt),
             "CPO": (map_f * (ci_f * bsa)) / 451
         })
-        
         return df
 
 # ==========================================
-# 5. VISUALIZATION & UI COMPONENTS
+# 5. VISUALIZATION FUNCTIONS (ALL RESTORED)
 # ==========================================
 def plot_sparkline(data, color):
-    # Minimalist sparkline for metric cards
     fig = px.line(x=np.arange(len(data)), y=data)
     fig.update_traces(line_color=color, line_width=2)
     fig.update_layout(showlegend=False, xaxis_visible=False, yaxis_visible=False, margin=dict(l=0,r=0,t=0,b=0), height=35)
     return fig
 
 def plot_bayes_bars(probs):
-    fig = go.Figure(go.Bar(
-        x=list(probs.values()), y=list(probs.keys()), orientation='h',
-        marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']], opacity=0.8)
-    ))
-    fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=120, xaxis=dict(range=[0,100], showticklabels=False), yaxis=dict(tickfont=dict(size=10)))
+    fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
+    fig.update_layout(margin=dict(l=0,r=0,t=0,b=0), height=100, xaxis=dict(showticklabels=False))
     return fig
 
-def render_dashboard(df, probs, suggestion, confidence, anomalies):
-    c_df = df.iloc[-1]
-    
-    # --- ZONE A: AI & DIAGNOSTICS ---
-    st.markdown('<div class="zone-header">ZONE A: AI DIAGNOSTICS & PHARMACOLOGY</div>', unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1.5, 1.5, 1])
-    
-    with c1:
-        st.markdown("**Bayesian Shock Classification**")
-        st.plotly_chart(plot_bayes_bars(probs), use_container_width=True)
-        st.markdown(f"<div class='rational-box'>Confidence: {max(probs.values()):.1f}% in top class. Based on CI/SVRI Gaussian likelihood.</div>", unsafe_allow_html=True)
-        
-    with c2:
-        st.markdown("**Reinforcement Learning Advisor**")
-        st.info(f"🤖 **Suggestion:** {suggestion}")
-        st.progress(confidence/100, f"Policy Confidence: {confidence}%")
-        st.markdown(f"<div class='rational-box'>Target: MAP>65, CI>2.2. Reward function penalties applied for vasoactive load.</div>", unsafe_allow_html=True)
+def plot_3d_attractor(df):
+    recent = df.iloc[-60:]
+    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis'), line=dict(width=2))])
+    fig.update_layout(scene=dict(xaxis_title='Power', yaxis_title='SVRI', zaxis_title='Lac'), margin=dict(l=0, r=0, b=0, t=0), height=250, title="3D Attractor")
+    return fig
 
-    with c3:
-        st.markdown("**Risk / Anomaly**")
-        is_anomaly = anomalies.iloc[-1]['anomaly_score'] == -1
-        status = "DETECTED" if is_anomaly else "STABLE"
-        color = THEME['anomaly'] if is_anomaly else THEME['ok']
-        st.markdown(f"<h2 style='color:{color}; margin:0;'>{status}</h2>", unsafe_allow_html=True)
-        st.caption("IsolationForest Algorithm")
+def plot_chaos_attractor(df):
+    rr = 60000 / df['HR'].iloc[-120:]
+    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color='teal', size=4, opacity=0.6)))
+    fig.update_layout(title="Chaos (Poincaré)", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="RR(n)", yaxis_title="RR(n+1)")
+    return fig
 
-    # --- ZONE B: METRICS GRID WITH SPARKLINES ---
-    st.markdown('<div class="zone-header">ZONE B: PHYSIOLOGIC METRICS (60m TREND)</div>', unsafe_allow_html=True)
-    
-    metrics = [
-        ("MAP", c_df['MAP'], "mmHg", df['MAP'].iloc[-60:], THEME['hemo']),
-        ("CI", c_df['CI'], "L/min/m²", df['CI'].iloc[-60:], THEME['info']),
-        ("SVRI", c_df['SVRI'], "dyn·s", df['SVRI'].iloc[-60:], THEME['warn']),
-        ("Lactate", c_df['Lactate'], "mM", df['Lactate'].iloc[-60:], THEME['crit']),
-        ("O2ER", c_df['O2ER']*100, "%", df['O2ER'].iloc[-60:], THEME['resp']),
-        ("PaCO2", c_df['PaCO2'], "mmHg", df['PaCO2'].iloc[-60:], THEME['text_muted'])
-    ]
-    
-    cols = st.columns(6)
-    for i, (label, val, unit, trend, color) in enumerate(metrics):
-        with cols[i]:
-            st.metric(label, f"{val:.1f} {unit}")
-            st.plotly_chart(plot_sparkline(trend, color), use_container_width=True)
+def plot_spectral_analysis(df):
+    f, Pxx = welch(df['HR'].iloc[-120:].to_numpy(), fs=1/60)
+    fig = px.line(x=f, y=Pxx, title="Spectral HRV")
+    fig.add_vline(x=0.04, line_dash="dot"); fig.add_vline(x=0.15, line_dash="dot")
+    fig.update_layout(height=200, margin=dict(l=20,r=20,t=30,b=20))
+    return fig
 
-    # --- ZONE C: ADVANCED RESPIRATORY & METABOLICS ---
-    st.markdown('<div class="zone-header">ZONE C: RESPIRATORY & METABOLIC DYNAMICS</div>', unsafe_allow_html=True)
-    rc1, rc2 = st.columns(2)
-    with rc1:
-        # V/Q Scatter
-        fig = px.scatter(df.iloc[-120:], x="PaO2", y="PaCO2", color="Vd/Vt", 
-                         title="Gas Exchange: V/Q & Dead Space", color_continuous_scale="Viridis")
-        st.plotly_chart(fig, use_container_width=True)
-    with rc2:
-        # DO2 vs VO2
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df['Time'], y=df['DO2I'], name="DO2I", line=dict(color=THEME['info'])))
-        fig.add_trace(go.Scatter(x=df['Time'], y=df['VO2I'], name="VO2I", line=dict(color=THEME['resp'], dash='dot')))
-        fig.update_layout(title="Supply (DO2) / Demand (VO2) Match", height=300, margin=dict(l=20,r=20,t=40,b=20))
-        st.plotly_chart(fig, use_container_width=True)
+def plot_monte_carlo_fan(df, p10, p50, p90):
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="History", line=dict(color=THEME['text_main'])))
+    fx = np.arange(30, 60)
+    fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0)))
+    fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median"))
+    fig.update_layout(height=200, title="Monte Carlo Forecast (MAP)", margin=dict(l=20,r=20,t=30,b=20))
+    return fig
+
+def plot_hemodynamic_profile(df):
+    recent = df.iloc[-60:]
+    fig = go.Figure()
+    fig.add_hline(y=2000, line_dash="dot"); fig.add_vline(x=2.2, line_dash="dot")
+    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis')))
+    fig.update_layout(title="Pump vs Pipes (CI/SVRI)", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    return fig
+
+def plot_phase_space(df):
+    recent = df.iloc[-60:]
+    fig = go.Figure()
+    fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=15, fillcolor="rgba(255,0,0,0.1)", line_width=0)
+    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered')))
+    fig.update_layout(title="Phase Space (CPO/Lac)", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    return fig
+
+def plot_counterfactual(df, drugs, case, bsa, peep):
+    sim = PatientSimulator(60)
+    base = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21}
+    df_b = sim.run(case, base, 0, bsa, peep)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="Current", line=dict(color=THEME['ok'])))
+    fig.add_trace(go.Scatter(y=df_b['MAP'], name="No Drugs", line=dict(dash='dot', color=THEME['crit'])))
+    fig.update_layout(title="Counterfactual (MAP)", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    return fig
 
 # ==========================================
-# 6. MAIN EXECUTION
+# 6. MAIN APP LOGIC
 # ==========================================
 st.markdown(STYLING, unsafe_allow_html=True)
 if 'events' not in st.session_state: st.session_state['events'] = []
@@ -414,35 +283,93 @@ if 'fluids' not in st.session_state: st.session_state['fluids'] = 0
 
 with st.sidebar:
     st.title("TITAN | L6 CDS")
-    res_mins = st.select_slider("Physics Resolution (mins)", options=[60, 180, 360, 720], value=360)
-    
-    st.markdown("### 🏥 Case")
+    res_mins = st.select_slider("Resolution", [60, 180, 360, 720], value=360)
     case_id = st.selectbox("Profile", ["65M Post-CABG", "24F Septic Shock", "82M HFpEF Sepsis", "50M Trauma"])
-    bsa = 1.9 # Simplified default
     
-    st.markdown("### 💉 Infusions")
-    with st.form("drugs_form"):
+    with st.form("drugs"):
         c1, c2 = st.columns(2)
         norepi = c1.number_input("Norepi", 0.0, 2.0, 0.0, 0.05)
         vaso = c1.number_input("Vaso", 0.0, 0.1, 0.0, 0.01)
         dobu = c2.number_input("Dobutamine", 0.0, 10.0, 0.0, 0.5)
         bb = c2.number_input("Esmolol", 0.0, 1.0, 0.0, 0.1)
-        fio2 = st.slider("FiO2", 0.21, 1.0, 0.4)
-        peep = st.slider("PEEP", 0, 20, 5)
-        submit = st.form_submit_button("Update Model")
+        fio2 = st.slider("FiO2", 0.21, 1.0, 0.4); peep = st.slider("PEEP", 0, 20, 5)
+        st.form_submit_button("Update Model")
     
     if st.button("💧 Bolus 500mL"): st.session_state['fluids'] += 500
+    live_mode = st.checkbox("🔴 LIVE MODE")
 
-# Run Simulation
 sim = PatientSimulator(mins=res_mins)
 drugs = {'norepi':norepi, 'vaso':vaso, 'dobu':dobu, 'bb':bb, 'fio2':fio2}
-df = sim.get_data(case_id, drugs, st.session_state['fluids'], bsa, peep)
+df = sim.run(case_id, drugs, st.session_state['fluids'], 1.9, peep)
+df = AI_Services.detect_anomalies(df)
+probs = AI_Services.predict_shock_bayes(df.iloc[-1])
+sugg, conf = AI_Services.rl_advisor(df.iloc[-1], drugs)
+p10, p50, p90 = AI_Services.monte_carlo_forecast(df)
+centroids = AI_Services.inverse_centroids(df)
 
-# Analytics
-probs = BayesianClassifier.predict_shock_probs(df.iloc[-1])
-sugg, conf = ReinforcementAgent.suggest_dose(df.iloc[-1], drugs)
-df_anom = AnomalyDetector.detect_anomalies(df)
+# --- DASHBOARD RENDERER ---
+container = st.empty()
 
-render_dashboard(df_anom, probs, sugg, conf, df_anom)
+def render(d_slice):
+    curr = d_slice.iloc[-1]
+    anom = "DETECTED" if curr['anomaly'] == -1 else "STABLE"
+    
+    with container.container():
+        # ZONE A: HEADER & AI
+        st.markdown(f"""
+        <div class="status-banner" style="border-left-color: {THEME['ai']};">
+            <div><div style="font-size:0.8rem; font-weight:800; color:{THEME['ai']}">BAYESIAN SHOCK PROBABILITY</div>
+            <div style="font-size:1.5rem; font-weight:800;">{max(probs, key=probs.get).upper()} ({max(probs.values()):.0f}%)</div>
+            <div style="font-size:0.8rem;">{centroids[0]}</div></div>
+            <div style="text-align:right">
+                <div style="font-size:0.8rem; font-weight:700;">ANOMALY STATUS</div>
+                <div class="{'crit-pulse' if anom=='DETECTED' else ''}" style="font-size:2rem; font-weight:800; color:{THEME['crit'] if anom=='DETECTED' else THEME['ok']}">{anom}</div>
+            </div>
+        </div>""", unsafe_allow_html=True)
+        
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1: st.plotly_chart(plot_bayes_bars(probs), use_container_width=True)
+        with c2: 
+            st.info(f"🤖 **RL Agent:** {sugg} ({conf}%)")
+            st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90), use_container_width=True)
+        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, 1.9, peep), use_container_width=True)
+
+        # ZONE B: METRICS
+        st.markdown('<div class="zone-header">ZONE B: PHYSIOLOGIC METRICS (60m)</div>', unsafe_allow_html=True)
+        cols = st.columns(6)
+        metrics = [("MAP", curr['MAP'], THEME['hemo']), ("CI", curr['CI'], THEME['info']), 
+                   ("SVRI", curr['SVRI'], THEME['warn']), ("Lactate", curr['Lactate'], THEME['crit']),
+                   ("O2ER", curr['O2ER']*100, THEME['resp']), ("CPO", curr['CPO'], THEME['drug'])]
+        for i, (l, v, c) in enumerate(metrics):
+            with cols[i]:
+                st.metric(l, f"{v:.1f}")
+                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c), use_container_width=True)
+
+        # ZONE C: ADVANCED PHYSICS (Restored)
+        st.markdown('<div class="zone-header">ZONE C: PHASE SPACE & COMPLEXITY</div>', unsafe_allow_html=True)
+        b1, b2, b3 = st.columns(3)
+        with b1: st.plotly_chart(plot_3d_attractor(d_slice), use_container_width=True)
+        with b2: st.plotly_chart(plot_hemodynamic_profile(d_slice), use_container_width=True)
+        with b3: st.plotly_chart(plot_phase_space(d_slice), use_container_width=True)
+        
+        c1, c2 = st.columns(2)
+        with c1: st.plotly_chart(plot_chaos_attractor(d_slice), use_container_width=True)
+        with c2: st.plotly_chart(plot_spectral_analysis(d_slice), use_container_width=True)
+
+        # ZONE E: TELEMETRY
+        st.markdown('<div class="zone-header">ZONE E: TELEMETRY</div>', unsafe_allow_html=True)
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03)
+        fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['MAP'], name="MAP", line=dict(color=THEME['hemo'])), row=1, col=1)
+        fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
+        fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['SpO2'], name="SpO2", line=dict(color=THEME['resp'])), row=3, col=1)
+        fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white")
+        st.plotly_chart(fig, use_container_width=True)
+
+if live_mode:
+    for i in range(max(10, res_mins-60), res_mins):
+        render(df.iloc[:i])
+        time.sleep(0.1)
+else:
+    render(df)
 
 st.caption("TITAN L6 | Bayesian Inference, RL Policy, IsolationForest Anomaly Detection, Pharmacokinetic Time-Constants.")
