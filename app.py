@@ -3,16 +3,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 from scipy.signal import welch
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
-import time
 
-# ==========================================
-# 1. SYSTEM CONFIGURATION & MEDICAL THEME
-# ==========================================
+# =========================================================
+# PAGE CONFIG / THEME
+# =========================================================
 st.set_page_config(
     page_title="TITAN | LEVEL 4 CDS",
     layout="wide",
@@ -20,417 +18,343 @@ st.set_page_config(
     page_icon="🧬"
 )
 
-# Advanced Medical Palette
 THEME = {
-    "bg": "#f8fafc",        
-    "card_bg": "#ffffff",   
-    "text_main": "#0f172a", 
+    "bg": "#f8fafc",
+    "card_bg": "#ffffff",
+    "text_main": "#0f172a",
     "text_muted": "#64748b",
-    "border": "#e2e8f0",    
-    "crit": "#dc2626",      # Red-600
-    "warn": "#d97706",      # Amber-600
-    "ok": "#059669",        # Emerald-600
-    "info": "#2563eb",      # Blue-600
-    "hemo": "#0891b2",      # Cyan-600
-    "resp": "#7c3aed",      # Violet (Respiratory)
-    "ai": "#be185d",        # Pink (AI)
-    "drug": "#4f46e5"       # Indigo (Pharm)
+    "border": "#e2e8f0",
+    "crit": "#dc2626",
+    "warn": "#d97706",
+    "ok": "#059669",
+    "info": "#2563eb",
+    "resp": "#7c3aed",
+    "hemo": "#0891b2",
+    "ai": "#be185d"
 }
 
 STYLING = f"""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Roboto+Mono:wght@500;700&display=swap');
-    
-    .stApp {{ background-color: {THEME['bg']}; color: {THEME['text_main']}; font-family: 'Inter', sans-serif; }}
-    
-    /* Flash Animation for Critical Alerts */
-    @keyframes flash-crit {{ 0% {{ box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }} 70% {{ box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }} 100% {{ box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }} }}
-    
-    .crit-pulse {{ animation: flash-crit 2s infinite; border: 1px solid {THEME['crit']} !important; }}
-    
-    /* Metrics */
+
+    .stApp {{
+        background-color: {THEME['bg']};
+        font-family: 'Inter', sans-serif;
+    }}
+
+    @keyframes flash-crit {{
+      0%   {{ box-shadow: 0 0 0 0 rgba(220,38,38,0.6); }}
+      70%  {{ box-shadow: 0 0 0 10px rgba(220,38,38,0); }}
+      100% {{ box-shadow: 0 0 0 0 rgba(220,38,38,0); }}
+    }}
+    .crit-pulse {{
+        animation: flash-crit 2s infinite;
+        border: 2px solid {THEME['crit']}!important;
+    }}
+
     div[data-testid="stMetric"] {{
         background-color: {THEME['card_bg']};
         padding: 8px 12px;
-        border-radius: 6px;
+        border-radius: 8px;
         border: 1px solid {THEME['border']};
-        box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
     }}
-    div[data-testid="stMetric"] label {{ font-size: 0.65rem; font-weight: 700; color: {THEME['text_muted']}; text-transform: uppercase; }}
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {{ font-family: 'Roboto Mono'; font-size: 1.4rem; font-weight: 800; }}
-    
-    /* Headers */
-    .zone-header {{
-        font-size: 0.8rem; font-weight: 900; color: {THEME['text_muted']};
-        text-transform: uppercase; border-bottom: 2px solid {THEME['border']};
-        margin: 20px 0 10px 0; padding-bottom: 4px; letter-spacing: 0.05em;
-    }}
-    
-    /* AI Banner */
+
     .status-banner {{
-        padding: 12px 20px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;
-        background: white; border-left: 6px solid; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); margin-bottom: 10px;
+        background-color: white;
+        padding: 12px 20px;
+        border-radius: 10px;
+        border-left: 6px solid;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.08);
+        margin-bottom: 12px;
     }}
 </style>
 """
+st.markdown(STYLING, unsafe_allow_html=True)
 
-# ==========================================
-# 2. ADVANCED PHYSIOLOGY & PHARMACOLOGY ENGINE
-# ==========================================
-class PharmaEngine:
-    """Pharmacodynamic Simulation (Receptor Kinetics)."""
-    @staticmethod
-    def apply_drugs(map_val, co, hr, svr, drugs):
-        # 1. Norepinephrine (Alpha-1 Agonist)
-        ne_effect = drugs['norepi'] * 2.5 
-        svr += (ne_effect * 800) 
-        map_val += (ne_effect * 25)
-        co += (ne_effect * 0.5)
-        
-        # 2. Vasopressin (V1 Agonist)
-        vaso_effect = drugs['vaso'] * 4.0 
-        svr += (vaso_effect * 600)
-        map_val += (vaso_effect * 15)
-        
-        # 3. Dobutamine (Beta-1/2 Agonist)
-        dobu_effect = drugs['dobu'] * 2.0
-        co += (dobu_effect * 2.5)
-        hr += (dobu_effect * 15)
-        svr -= (dobu_effect * 300) 
-        
-        # 4. Beta Blockers
-        bb_effect = drugs['bb'] * 1.5
-        hr -= (bb_effect * 20)
-        co -= (bb_effect * 0.8)
-        
-        return map_val, co, hr, svr
+# =========================================================
+# 1. CORE SIMULATION ENGINES
+# =========================================================
 
 class PhysiologyEngine:
+    """Advanced physiologic system generator with noise smoothing and soft boundaries."""
     @staticmethod
-    def brownian_bridge(n, start, end, volatility=1.0, seed=42):
+    def pink_noise(n):
+        return np.convolve(np.random.normal(0, 0.5, n), np.ones(7)/7, mode='same')
+
+    @staticmethod
+    def brownian_bridge(n, start, end, vol=1.0, seed=42):
         np.random.seed(seed)
         t = np.linspace(0, 1, n)
         dW = np.random.normal(0, np.sqrt(1/n), n)
         W = np.cumsum(dW)
-        B = start + W - t * (W[-1] - (end - start))
-        pink = np.convolve(np.random.normal(0, 0.5, n), np.ones(5)/5, mode='same')
-        return B + (pink * volatility)
+        BB = start + W - t*(W[-1] - (end - start))
+        return BB + PhysiologyEngine.pink_noise(n) * vol
 
     @staticmethod
-    def resp_module(pao2_target, shunt_fraction, fio2):
-        """Simulates Oxygenation based on Shunt and FiO2."""
-        p_ideal = (fio2 * 713) - 40/0.8 
-        pao2 = p_ideal * (1 - shunt_fraction)
-        spo2 = 100 / (1 + (23400 / (pao2**3 + 150*pao2)) )
+    def resp(p_shunt, fio2):
+        p_ideal = (fio2 * 713) - (40 / 0.8)
+        pao2 = max(40, p_ideal * (1 - p_shunt))
+        spo2 = 100 / (1 + 23400 / (pao2**3 + 150*pao2))
         return pao2, spo2
 
-    @staticmethod
-    def fluid_responsiveness(ppv, fluid_bolus_ml):
-        """Starling Curve Logic."""
-        if ppv > 12:
-            return (fluid_bolus_ml / 500) * 1.2 # L/min gain
-        else:
-            return (fluid_bolus_ml / 500) * 0.1 # Minimal gain
 
-# ==========================================
-# 3. PATIENT SIMULATOR (ENHANCED)
-# ==========================================
+class PharmaEngine:
+    """Drug effect interpreter with physiologic soft limits."""
+    @staticmethod
+    def apply(map_val, co, hr, svr, d):
+        # Norepi
+        ne = d['norepi'] * 2.5
+        svr += ne * 700
+        map_val += ne * 22
+
+        # Vasopressin
+        va = d['vaso'] * 4
+        svr += va * 550
+        map_val += va * 15
+
+        # Dobutamine
+        db = d['dobu'] * 1.7
+        co += db * 2.0
+        hr += db * 12
+        svr -= db * 250
+
+        # Beta-blockers
+        bb = d['bb']
+        hr -= bb * 15
+        co -= bb * 0.6
+
+        # Clamp-safe values
+        map_val = np.clip(map_val, 35, 140)
+        hr = np.clip(hr, 35, 150)
+        co = np.clip(co, 1.5, 12)
+        svr = np.clip(svr, 300, 3000)
+
+        return map_val, co, hr, svr
+
+
 class PatientSimulator:
     def __init__(self, mins=360):
         self.mins = mins
-        self.t = np.arange(mins)
+        self.time = np.arange(mins)
 
-    def get_data(self, profile, drugs, fluids, age, chronic, drift, seed):
-        # --- 1. BASELINE MODIFIERS ---
-        age_mod_svr = 1.2 if age > 70 else 1.0
-        age_mod_co = 0.8 if age > 70 else 1.0
-        hf_mod = 0.7 if "Heart Failure" in chronic else 1.0
-        copd_mod = 0.85 if "COPD" in chronic else 1.0
-        
-        # --- 2. SCENARIO INITIALIZATION ---
-        if profile == "Healthy":
-            p = {'hr': (65, 70), 'map': (85, 85), 'co': (5.0, 5.0), 'vol': 1.0, 'shunt': 0.05}
-        elif profile == "Compensated Sepsis":
-            p = {'hr': (85, 100), 'map': (82, 75), 'co': (6.0, 7.0), 'vol': 1.5, 'shunt': 0.10}
-        elif profile == "Vasoplegic Shock":
-            p = {'hr': (110, 130), 'map': (60, 50), 'co': (7.0, 8.0), 'vol': 1.2, 'shunt': 0.15}
-        elif profile == "Cardiogenic Shock":
-            p = {'hr': (90, 105), 'map': (70, 55), 'co': (3.5, 2.5), 'vol': 2.0, 'shunt': 0.20}
+    @st.cache_data(show_spinner=False)
+    def simulate(self, scenario, drugs, fluids, age, chronic, drift, seed):
+        # Baseline profiles
+        profiles = {
+            "Healthy":              (65,70,  85,82,  5.0,5.0,   0.05),
+            "Compensated Sepsis":   (85,95,  80,75,  6.0,7.0,   0.10),
+            "Vasoplegic Shock":     (110,125, 65,55, 7.0,8.0,  0.15),
+            "Cardiogenic Shock":    (95,105, 70,55,  3.5,2.8,  0.20)
+        }
+
+        hr0, hr1, map0, map1, co0, co1, shunt = profiles[scenario]
 
         drift_factor = np.linspace(1.0, drift, self.mins)
-        
-        # --- 3. GENERATE RAW RANDOM WALKS ---
-        hr = PhysiologyEngine.brownian_bridge(self.mins, p['hr'][0], p['hr'][1], p['vol'], seed) * drift_factor
-        map_raw = PhysiologyEngine.brownian_bridge(self.mins, p['map'][0], p['map'][1], p['vol']*0.8, seed+1) / drift_factor
-        co_raw = PhysiologyEngine.brownian_bridge(self.mins, p['co'][0], p['co'][1], 0.2, seed+2) * hf_mod / drift_factor
-        
-        # --- 4. RESPIRATORY SIMULATION ---
-        rr = PhysiologyEngine.brownian_bridge(self.mins, 14, 22 if "Shock" in profile else 16, 2.0, seed+3)
-        paco2 = 40 + (16 - rr) * 1.5 
-        
-        pao2_arr, spo2_arr = [], []
-        for i in range(self.mins):
-            pa, sp = PhysiologyEngine.resp_module(0, p['shunt'] / copd_mod, drugs['fio2'])
-            pao2_arr.append(pa + np.random.normal(0, 5))
-            spo2_arr.append(sp)
-            
-        # --- 5. DERIVED METRICS ---
-        ppv_base = 15 if "Shock" in profile else 5
-        ppv = ppv_base + (np.sin(self.t/10) * 3) 
-        co_fluid_gain = PhysiologyEngine.fluid_responsiveness(np.mean(ppv), fluids)
-        
-        # --- 6. PHARMACODYNAMICS ---
-        svr_raw = ((map_raw - 8) / co_raw) * 800 * age_mod_svr
-        final_map, final_co, final_hr, final_svr = [], [], [], []
-        
-        for i in range(self.mins):
-            m, c, h, s = PharmaEngine.apply_drugs(map_raw[i], co_raw[i] + co_fluid_gain, hr[i], svr_raw[i], drugs)
-            final_map.append(m)
-            final_co.append(c)
-            final_hr.append(h)
-            final_svr.append(s)
-            
-        # --- 7. METABOLIC ---
-        hb = 12.0
-        do2 = np.array(final_co) * hb * 1.34 * (np.array(spo2_arr)/100) * 10
-        vo2 = do2 * 0.25 
-        lactate = np.zeros(self.mins)
-        lac_curr = 1.0
-        for i in range(self.mins):
-            production = 0.1 if do2[i] < 400 else 0.0
-            clearance = 0.05 if do2[i] > 500 else 0.01
-            lac_curr = max(0.5, lac_curr + production - clearance)
-            lactate[i] = lac_curr
 
-        # --- 8. DATAFRAME ---
+        # Hemodynamics
+        hr  = PhysiologyEngine.brownian_bridge(self.mins, hr0, hr1, 1.0, seed) * drift_factor
+        map_raw = PhysiologyEngine.brownian_bridge(self.mins, map0, map1, 0.8, seed+1) / drift_factor
+        co_raw  = PhysiologyEngine.brownian_bridge(self.mins, co0, co1, 0.25, seed+2) / drift_factor
+
+        # Respiratory
+        rr = PhysiologyEngine.brownian_bridge(self.mins, 14, 18, 2.0, seed+3)
+        paco2 = 40 + (16 - rr)*1.5
+
+        pao2, spo2 = [], []
+        for _ in range(self.mins):
+            pa, sp = PhysiologyEngine.resp(shunt, drugs['fio2'])
+            pao2.append(pa + np.random.normal(0,4))
+            spo2.append(sp)
+
+        # Fluid effect — dynamic Starling model
+        ppv = 10 + 3*np.sin(self.time/12)
+        fluid_gain = (fluids / 500) * (1.2 if np.mean(ppv) > 12 else 0.15)
+        co_raw += fluid_gain
+
+        # SVR
+        svr_raw = ((map_raw - 8) / np.maximum(co_raw, 0.8)) * 750
+        svr_raw = np.clip(svr_raw, 300, 2500)
+
+        # Apply drugs
+        MAP, CO, HR, SVR = [], [], [], []
+        for i in range(self.mins):
+            m, c, h, s = PharmaEngine.apply(map_raw[i], co_raw[i], hr[i], svr_raw[i], drugs)
+            MAP.append(m); CO.append(c); HR.append(h); SVR.append(s)
+
+        MAP = np.array(MAP); CO = np.array(CO); HR = np.array(HR); SVR = np.array(SVR)
+
+        # Oxygen transport
+        hb = 12
+        do2 = CO * hb * 1.34 * (np.array(spo2)/100) * 10
+        vo2 = do2 * 0.25
+
+        # Lactate
+        lactate = np.zeros(self.mins)
+        lac = 1.0
+        for i in range(self.mins):
+            prod = 0.1 if do2[i] < 380 else 0
+            clr = 0.03 if do2[i] > 520 else 0.01
+            lac = max(0.4, lac + prod - clr)
+            lactate[i] = lac
+
         df = pd.DataFrame({
-            "Time": self.t, "HR": final_hr, "MAP": final_map, "CO": final_co, "SVR": final_svr,
-            "Lactate": lactate, "SpO2": spo2_arr, "PaO2": pao2_arr, "PaCO2": paco2, "RR": rr,
-            "PPV": ppv, "DO2": do2, "VO2": vo2,
-            "Creatinine": np.linspace(0.8, 1.2 if map_raw[-1] < 60 else 0.9, self.mins)
+            "Time": self.time,
+            "HR": HR, "MAP": MAP, "CO": CO, "SVR": SVR,
+            "Lactate": lactate,
+            "SpO2": spo2, "PaO2": pao2, "PaCO2": paco2,
+            "PPV": ppv, "RR": rr,
+            "DO2": do2, "VO2": vo2,
         })
-        
-        df['CPO'] = (df['MAP'] * df['CO']) / 451
-        df['SI'] = df['HR'] / df['MAP'] 
-        df['MSI'] = df['HR'] / (df['MAP'] * 1.0) 
-        df['SV'] = (df['CO'] * 1000) / df['HR']
-        
+
+        df["CPO"] = (df["MAP"] * df["CO"]) / 451
+        df["SV"] = (df["CO"] * 1000) / df["HR"]
+        df["MSI"] = df["HR"] / df["MAP"]
+
+        df["Creatinine"] = np.linspace(0.8, 1.3 if MAP[-1] < 60 else 1.0, self.mins)
         return df
 
-# ==========================================
-# 4. AI & PREDICTIVE LAYER
-# ==========================================
-class AI_Analytics:
+
+# =========================================================
+# 2. AI LAYER
+# =========================================================
+class AI:
     @staticmethod
-    def calculate_stability_score(row):
-        score = 100
-        if row['MAP'] < 65: score -= 20
-        if row['Lactate'] > 2: score -= 20
-        if row['CPO'] < 0.6: score -= 30
-        if row['SpO2'] < 90: score -= 10
-        if row['HR'] > 110: score -= 10
-        return max(0, score)
+    def score(row):
+        penalties = [
+            20 if row["MAP"] < 65 else 0,
+            20 if row["Lactate"] > 2 else 0,
+            25 if row["CPO"] < 0.6 else 0,
+            10 if row["SpO2"] < 90 else 0,
+            10 if row["HR"] > 115 else 0,
+        ]
+        return max(0, 100 - sum(penalties))
 
     @staticmethod
-    def predict_trajectory(df, target_col, minutes=30):
-        recent = df.iloc[-30:]
-        X = recent.index.values.reshape(-1, 1)
-        y = recent[target_col].values
-        model = LinearRegression().fit(X, y)
-        future_X = np.arange(df.index[-1], df.index[-1]+minutes).reshape(-1, 1)
-        future_y = model.predict(future_X)
-        return future_y[-1]
+    def predict(df, col, horizon=30):
+        recent = df[col].iloc[-40:].values
+        X = np.arange(len(recent)).reshape(-1,1)
+        model = LinearRegression().fit(X, recent)
+        return model.predict([[len(recent)+horizon]])[0]
 
     @staticmethod
-    def cluster_phenotypes(df):
-        X = df[['CO', 'SVR', 'Lactate']].iloc[-60:]
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        kmeans = KMeans(n_clusters=3, random_state=42).fit(X_scaled)
-        center = kmeans.cluster_centers_[kmeans.labels_[-1]]
-        if center[1] > 0.5: return "Vasoconstricted / Cardiogenic"
-        elif center[0] > 0.5: return "Vasoplegic / High Flow"
-        else: return "Uncompensated / Metabolic"
+    def phenotype(df):
+        X = df[["CO","SVR","Lactate"]].iloc[-90:]
+        X_scaled = StandardScaler().fit_transform(X)
 
-# ==========================================
-# 5. VISUALIZATION COMPONENTS
-# ==========================================
-def plot_3d_attractor(df):
-    recent = df.iloc[-60:]
-    fig = go.Figure(data=[go.Scatter3d(
-        x=recent['CPO'], y=recent['SVR'], z=recent['Lactate'],
-        mode='lines+markers',
-        marker=dict(size=4, color=recent.index, colorscale='Viridis', opacity=0.8),
-        line=dict(color='rgba(100,100,100,0.5)', width=2)
-    )])
-    fig.update_layout(
-        scene=dict(xaxis_title='Power (W)', yaxis_title='SVR', zaxis_title='Lactate'),
-        margin=dict(l=0, r=0, b=0, t=0), height=300,
-        title="3D Hemo-Metabolic Attractor"
-    )
+        kmeans = KMeans(n_clusters=3, n_init="auto", random_state=42).fit(X_scaled)
+        c = kmeans.cluster_centers_[kmeans.labels_[-1]]
+
+        if c[1] > 0.5:     return "Vasoconstricted / Low Output"
+        if c[0] > 0.4:     return "Vasoplegic / High Output"
+        return "Metabolic Instability"
+
+
+# =========================================================
+# 3. VISUALIZATIONS
+# =========================================================
+def plot_attractor(df):
+    d = df.iloc[-70:]
+    fig = go.Figure(go.Scatter3d(
+        x=d["CPO"], y=d["SVR"], z=d["Lactate"],
+        mode="lines+markers",
+        marker=dict(size=4, color=d.index, colorscale="Viridis")
+    ))
+    fig.update_layout(height=280, margin=dict(l=0,r=0,b=0,t=30))
     return fig
 
-def plot_counterfactual(df, drugs, profile):
-    sim = PatientSimulator(mins=60)
-    base_drugs = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21} 
-    df_base = sim.get_data(profile, base_drugs, 0, 50, [], 1.0, 42)
-    
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="With Intervention", line=dict(color=THEME['ok'])))
-    fig.add_trace(go.Scatter(y=df_base['MAP'].iloc[-60:], name="Projected Untreated", line=dict(dash='dot', color=THEME['crit'])))
-    fig.update_layout(title="Intervention Effectiveness Projection (MAP)", height=250, margin=dict(l=20,r=20,t=30,b=20))
-    return fig
+def plot_spectrum(df):
+    data = df["HR"].iloc[-180:].to_numpy()
+    f, Pxx = welch(data, fs=1/60)
 
-def plot_spectral_analysis(df):
-    # Fix: Convert to numpy to avoid scipy KeyError with Pandas series slices
-    data = df['HR'].iloc[-120:].to_numpy()
-    f, Pxx = welch(data, fs=1/60) 
-    fig = px.line(x=f, y=Pxx, title="HRV Spectral Density (Autonomic Tone)")
-    fig.update_xaxes(title="Frequency (Hz)")
+    fig = px.line(x=f, y=Pxx)
+    fig.update_layout(title="HRV Spectral Density", height=250)
+    fig.update_xaxes(title="Hz")
     fig.update_yaxes(title="Power")
-    fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF (Sympathetic)")
-    fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF (Parasympathetic)")
-    fig.update_layout(height=250, margin=dict(l=20,r=20,t=30,b=20))
     return fig
 
-# ==========================================
-# 6. MAIN APP EXECUTION
-# ==========================================
-st.markdown(STYLING, unsafe_allow_html=True)
 
-# --- SESSION STATE ---
-if 'events' not in st.session_state: st.session_state['events'] = []
-if 'fluids_given' not in st.session_state: st.session_state['fluids_given'] = 0
-
-# --- SIDEBAR ---
+# =========================================================
+# 4. SIDEBAR CONTROLS
+# =========================================================
 with st.sidebar:
     st.title("TITAN | L4 CDS")
-    seed = st.number_input("Random Seed", 1, 1000, 42)
-    drift = st.slider("Scenario Drift (Deterioration)", 1.0, 2.0, 1.0, 0.1)
-    
-    st.markdown("### 👤 Patient Profile")
-    age = st.slider("Age", 18, 95, 65)
-    chronic = st.multiselect("Comorbidities", ["Heart Failure", "COPD", "CKD"])
-    scenario = st.selectbox("Presenting Phenotype", ["Healthy", "Compensated Sepsis", "Vasoplegic Shock", "Cardiogenic Shock"])
-    
-    st.markdown("### 💉 Interventions")
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        norepi = st.slider("Norepi (mcg)", 0.0, 1.0, 0.0, 0.05)
-        vaso = st.slider("Vasopressin", 0.0, 0.06, 0.0, 0.01)
-    with col_d2:
-        dobu = st.slider("Dobutamine", 0.0, 10.0, 0.0, 1.0)
-        bb = st.slider("Beta-Blocker", 0.0, 1.0, 0.0, 0.1)
-    
-    fio2 = st.slider("FiO2", 0.21, 1.0, 0.40)
-    
-    if st.button("💧 Give 500mL Bolus"):
-        st.session_state['fluids_given'] += 500
-        st.session_state['events'].append({"time": 360, "event": "Fluid Bolus"})
-    
-    st.caption(f"Total Fluids: {st.session_state['fluids_given']} mL")
-    if st.checkbox("Live Mode (Simulate 1hr)"):
-        st.spinner("Simulating real-time data flow...")
 
-# --- DATA GENERATION ---
-drug_dict = {'norepi': norepi, 'vaso': vaso, 'dobu': dobu, 'bb': bb, 'fio2': fio2}
+    seed = st.number_input("Random Seed", 1, 9999, 42)
+    drift = st.slider("Scenario Drift", 1.0, 2.5, 1.0, 0.1)
+
+    st.markdown("### 👤 Patient")
+    age = st.slider("Age", 18, 95, 55)
+    chronic = st.multiselect("Comorbidities", ["Heart Failure","COPD","CKD"])
+    scenario = st.selectbox("Presentation", [
+        "Healthy","Compensated Sepsis", "Vasoplegic Shock","Cardiogenic Shock"
+    ])
+
+    st.markdown("### 💉 Drugs")
+    norepi = st.slider("Norepi", 0.0, 1.0, 0.0, 0.05)
+    vaso   = st.slider("Vasopressin", 0.0, 0.06, 0.0, 0.01)
+    dobu   = st.slider("Dobutamine", 0.0, 10.0, 0.0, 1.0)
+    bb     = st.slider("Beta Blocker", 0.0, 1.0, 0.0, 0.05)
+    fio2   = st.slider("FiO₂", 0.21, 1.0, 0.40)
+
+    if "fluids" not in st.session_state:
+        st.session_state.fluids = 0
+    if st.button("Give 500 mL"):
+        st.session_state.fluids += 500
+
+    st.caption(f"Fluids Given: {st.session_state.fluids} mL")
+
+# =========================================================
+# 5. DATA GENERATION
+# =========================================================
 sim = PatientSimulator(mins=360)
-df = sim.get_data(scenario, drug_dict, st.session_state['fluids_given'], age, chronic, drift, seed)
+drugs = {"norepi":norepi,"vaso":vaso,"dobu":dobu,"bb":bb,"fio2":fio2}
 
-cur = df.iloc[-1]
-prev = df.iloc[-60]
+df = sim.simulate(scenario, drugs, st.session_state.fluids, age, chronic, drift, seed)
 
-# --- AI ANALYTICS ---
-stability = AI_Analytics.calculate_stability_score(cur)
-phenotype = AI_Analytics.cluster_phenotypes(df)
-pred_map = AI_Analytics.predict_trajectory(df, 'MAP', 30)
+curr = df.iloc[-1]
+stability = AI.score(curr)
+phenotype = AI.phenotype(df)
+pred_map = AI.predict(df, "MAP", 30)
 
-# ==========================================
-# SINGLE PANE UI LAYOUT
-# ==========================================
-
-# --- 1. BANNER ---
-alert_cls = "crit-pulse" if stability < 50 else ""
+# =========================================================
+# 6. TOP BANNER
+# =========================================================
+alert = "crit-pulse" if stability < 50 else ""
 st.markdown(f"""
-<div class="status-banner" style="border-left-color: {THEME['ai']};">
+<div class="status-banner" style="border-left-color:{THEME['ai']}">
     <div>
-        <div style="font-size:0.8rem; color:{THEME['ai']}; font-weight:800;">AI PHENOTYPE: {phenotype}</div>
-        <div style="font-size:1.8rem; font-weight:800; color:{THEME['text_main']}">{scenario.upper()}</div>
-        <div style="font-size:0.9rem; color:{THEME['text_muted']};">Drift Factor: {drift}x | Age: {age}</div>
+        <div style="font-size:0.85rem;color:{THEME['ai']};font-weight:800;">
+            AI Phenotype: {phenotype}
+        </div>
+        <div style="font-size:1.7rem;font-weight:800;">{scenario.upper()}</div>
+        <div style="color:{THEME['text_muted']};">Age {age} | Drift {drift}×</div>
     </div>
-    <div style="text-align:right">
-        <div style="font-size:0.8rem; font-weight:700;">STABILITY INDEX</div>
-        <div class="{alert_cls}" style="font-size:2.2rem; font-weight:800; padding:5px 15px; border-radius:5px; display:inline-block; color:{THEME['text_main']}">{stability:.0f}/100</div>
+    <div>
+        <div style="font-size:0.8rem;font-weight:700;text-align:right;">Stability Index</div>
+        <div class="{alert}" style="
+            font-size:2rem;font-weight:800;padding:5px 15px;border-radius:6px;
+            text-align:right;display:inline-block;
+        ">{stability:.0f}/100</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. ZONE A: 3D & AI ---
-c1, c2 = st.columns([2, 1])
-with c1:
-    st.plotly_chart(plot_3d_attractor(df), use_container_width=True)
-with c2:
-    st.markdown("**🔮 AI Trajectory (30 min)**")
-    st.metric("Predicted MAP", f"{pred_map:.1f}", f"{pred_map - cur['MAP']:.1f}")
-    st.metric("Lactate Clearance", f"{(prev['Lactate'] - cur['Lactate'])/prev['Lactate']*100:.1f}%", help="Last hour clearance")
-    st.progress(stability/100, "Stability Score")
-    
-    st.markdown("**🔍 Feature Drivers**")
-    st.bar_chart({"MAP": 0.4, "Lactate": 0.3, "CPO": 0.2, "HR": 0.1}, height=120)
 
-# --- 3. ZONE B: METRICS ---
-st.markdown('<div class="zone-header">ZONE B: HEMODYNAMICS & METABOLICS</div>', unsafe_allow_html=True)
-m1, m2, m3, m4, m5, m6 = st.columns(6)
-def arrow(val): return "↑" if val > 0 else "↓" if val < 0 else "→"
-def metric_card(col, label, val, unit, delta):
-    col.metric(label, f"{val:.1f} {unit}", f"{arrow(delta)} {abs(delta):.1f}", delta_color="inverse")
+# =========================================================
+# 7. METRICS ROW
+# =========================================================
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("MAP", f"{curr.MAP:.0f}")
+col2.metric("HR", f"{curr.HR:.0f}")
+col3.metric("CO", f"{curr.CO:.2f} L/min")
+col4.metric("CPO", f"{curr.CPO:.2f} W")
+col5.metric("Lactate", f"{curr.Lactate:.2f}")
 
-metric_card(m1, "MAP", cur['MAP'], "mmHg", cur['MAP']-prev['MAP'])
-metric_card(m2, "Heart Rate", cur['HR'], "bpm", cur['HR']-prev['HR'])
-metric_card(m3, "Cardiac Power", cur['CPO'], "W", cur['CPO']-prev['CPO'])
-metric_card(m4, "Lactate", cur['Lactate'], "mM", cur['Lactate']-prev['Lactate'])
-metric_card(m5, "DO2", cur['DO2'], "ml/m", cur['DO2']-prev['DO2'])
-metric_card(m6, "SpO2", cur['SpO2'], "%", cur['SpO2']-prev['SpO2'])
+# =========================================================
+# 8. GRAPHS
+# =========================================================
+st.subheader("Hemo-Metabolic Attractor")
+st.plotly_chart(plot_attractor(df), use_container_width=True)
 
-# --- 4. ZONE C: RESPIRATORY ---
-st.markdown('<div class="zone-header">ZONE C: RESPIRATORY & FLUID STATUS</div>', unsafe_allow_html=True)
-r1, r2, r3, r4 = st.columns(4)
-r1.metric("PaO2 / FiO2", f"{cur['PaO2']/drug_dict['fio2']:.0f}", "Est. Shunt") 
-r2.metric("PaCO2 (Vent)", f"{cur['PaCO2']:.1f}", "mmHg")
-r3.metric("PPV (Fluid Resp)", f"{cur['PPV']:.1f}%", "Responsive" if cur['PPV']>12 else "Non-Resp", delta_color="normal")
-r4.metric("Shock Index", f"{cur['SI']:.2f}", ">0.9 Crit")
-
-# --- 5. ZONE D: DEEP ANALYTICS (SINGLE PANE) ---
-st.markdown('<div class="zone-header">ZONE D: ADVANCED ANALYTICS & TELEMETRY</div>', unsafe_allow_html=True)
-
-# Row 1: Telemetry
-fig_tele = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, subplot_titles=("Hemodynamics", "Perfusion", "Resistance"))
-fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['MAP'], name="MAP", line=dict(color=THEME['hemo'])), row=1, col=1)
-fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
-fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['SVR'], name="SVR", line=dict(color=THEME['warn'])), row=3, col=1)
-for e in st.session_state['events']: fig_tele.add_vline(x=e['time'], line_dash="dash", line_color="green")
-fig_tele.update_layout(height=400, margin=dict(l=0,r=0,t=20,b=20), template="plotly_white")
-st.plotly_chart(fig_tele, use_container_width=True)
-
-# Row 2: Analytics Grid
-a1, a2, a3 = st.columns(3)
-
-with a1:
-    st.markdown("**🔥 Correlation Heatmap**")
-    corr = df[['MAP','HR','CO','SVR','Lactate','CPO','PPV']].corr()
-    fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r')
-    fig_corr.update_layout(height=300)
-    st.plotly_chart(fig_corr, use_container_width=True)
-
-with a2:
-    st.markdown("**🌊 Spectral HRV Analysis**")
-    st.plotly_chart(plot_spectral_analysis(df), use_container_width=True)
-
-with a3:
-    st.markdown("**💊 Intervention Projection**")
-    st.plotly_chart(plot_counterfactual(df, drug_dict, scenario), use_container_width=True)
-    if st.session_state['events']:
-        st.markdown("**📝 Event Log**")
-        st.write(st.session_state['events'])
-
-st.caption("TITAN L4 CDS | Validated Modules: PharmKinetics, Starling Fluid Physics, Spectral HRV. | For Investigational Use Only.")
+st.subheader("Autonomic Tone")
+st.plotly_chart(plot_spectrum(df), use_container_width=True)
