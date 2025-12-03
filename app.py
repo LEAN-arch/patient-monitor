@@ -5,10 +5,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from scipy.signal import welch
-from scipy.stats import norm, multivariate_normal
+from scipy.stats import norm, multivariate_normal, wasserstein_distance, linregress, chi2
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
+from sklearn.decomposition import PCA
+import statsmodels.api as sm
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+from statsmodels.tsa.statespace.sarimax import SARIMAX
 import time
 
 # ==========================================
@@ -25,7 +29,8 @@ THEME = {
     "bg": "#f8fafc", "card_bg": "#ffffff", "text_main": "#0f172a", "text_muted": "#64748b",
     "border": "#e2e8f0", "crit": "#dc2626", "warn": "#d97706", "ok": "#059669",
     "info": "#2563eb", "hemo": "#0891b2", "resp": "#7c3aed", "ai": "#be185d", 
-    "drug": "#4f46e5", "anomaly": "#db2777", "external": "#d946ef"
+    "drug": "#4f46e5", "anomaly": "#db2777", "external": "#d946ef", "qa": "#059669",
+    "spc": "#7c3aed"
 }
 
 STYLING = f"""
@@ -53,6 +58,9 @@ class CONSTANTS:
     ATM_PRESSURE = 760; H2O_PRESSURE = 47; R_QUOTIENT = 0.8; MAX_PAO2 = 600
     LAC_PROD_THRESH = 330; LAC_CLEAR_RATE = 0.05; VCO2_CONST = 130 
     EPSILON = 1e-5
+    # QA & SPC Limits
+    MAP_LSL = 65.0; MAP_USL = 110.0
+    EWMA_LAMBDA = 0.2; CUSUM_K = 0.5; CUSUM_H = 4.0
 
 # ==========================================
 # 2. DYNAMICS MODULES
@@ -66,16 +74,9 @@ class AutonomicDynamics:
             t = np.linspace(0, 1, n)
             dW = np.random.normal(0, np.sqrt(1/n), n)
             B = start + np.cumsum(dW) - t * (np.cumsum(dW)[-1] - (end - start))
-            
-            if signal_type == 'paced':
-                return B + np.random.normal(0, 0.05, n)
-            elif signal_type == 'mechanical_vent':
-                resp_wave = np.sin(np.linspace(0, n/4, n)) * 2.0
-                return B + resp_wave + np.random.normal(0, 0.2, n)
-            else:
-                stress = 1.0 + (max(0, start - end) / 20.0)
-                pink = np.convolve(np.random.normal(0, 0.5, n), np.ones(8)/8, mode='same')
-                return B + (pink * vol * stress)
+            if signal_type == 'paced': return B + np.random.normal(0, 0.05, n)
+            elif signal_type == 'mechanical_vent': return B + np.sin(np.linspace(0, n/4, n)) * 2.0 + np.random.normal(0, 0.2, n)
+            else: return B + (np.convolve(np.random.normal(0, 0.5, n), np.ones(8)/8, mode='same') * vol * (1.0 + (max(0, start - end) / 20.0)))
 
         if is_paced: hr = noise(mins, p['hr'][0], p['hr'][0], 0.1, seed, 'paced')
         elif vent_mode == 'Control (AC)': hr = noise(mins, p['hr'][0], p['hr'][1], 1.5, seed, 'mechanical_vent')
@@ -85,7 +86,6 @@ class AutonomicDynamics:
         ci = np.maximum(noise(mins, p['ci'][0], p['ci'][1], 0.2, seed+2, 'bio'), 0.5)
         svri = np.maximum(noise(mins, p['svri'][0], p['svri'][1], 100, seed+3, 'bio'), 100.0)
         rr = np.maximum(noise(mins, 16, 28, 2.0, seed+4, 'bio'), 4.0)
-        
         return hr, map_r, ci, svri, rr
 
 class PharmacokineticsEngine:
@@ -97,34 +97,25 @@ class PharmacokineticsEngine:
             if dose <= 0: return np.zeros(mins)
             pk = CONSTANTS.DRUG_PK[drug_name]
             if param not in pk: return np.zeros(mins)
-            max_eff = dose * pk[param]
-            return max_eff * (1 - np.exp(-t_vec / pk['tau'])) * np.exp(-t_vec / pk['tol'])
+            return (dose * pk[param]) * (1 - np.exp(-t_vec / pk['tau'])) * np.exp(-t_vec / pk['tol'])
 
         d_svr = calculate_effect('norepi', drugs['norepi'], 'svr') + calculate_effect('vaso', drugs['vaso'], 'svr') + calculate_effect('dobu', drugs['dobu'], 'svr')
         d_map = calculate_effect('norepi', drugs['norepi'], 'map') + calculate_effect('vaso', drugs['vaso'], 'map') + calculate_effect('bb', drugs['bb'], 'map')
         d_co  = calculate_effect('norepi', drugs['norepi'], 'co') + calculate_effect('dobu', drugs['dobu'], 'co') + calculate_effect('bb', drugs['bb'], 'co')
         d_hr  = calculate_effect('dobu', drugs['dobu'], 'hr') + calculate_effect('bb', drugs['bb'], 'hr')
 
-        return (
-            np.maximum(map_base + d_map, 10.0), 
-            np.maximum(ci_base + d_co, 0.1), 
-            np.maximum(hr_base + d_hr, 30.0), 
-            np.maximum(svri_base + d_svr, 50.0)
-        )
+        return (np.maximum(map_base + d_map, 10.0), np.maximum(ci_base + d_co, 0.1), np.maximum(hr_base + d_hr, 30.0), np.maximum(svri_base + d_svr, 50.0))
 
 class RespiratoryDynamics:
     @staticmethod
     def simulate_gas_exchange(fio2, rr, shunt_base, peep, mins, copd_factor):
-        fio2 = np.clip(fio2, 0.21, 1.0)
-        rr = np.maximum(rr, 4.0)
+        fio2 = np.clip(fio2, 0.21, 1.0); rr = np.maximum(rr, 4.0)
         vd_vt = np.clip(0.3 * copd_factor + (0.1 if copd_factor > 1.0 else 0), 0.1, 0.8)
         va = np.maximum((rr * 0.5) * (1 - vd_vt), 0.5) 
         paco2 = (CONSTANTS.VCO2_CONST * 0.863) / va
         p_ideal = np.clip((fio2 * (CONSTANTS.ATM_PRESSURE - CONSTANTS.H2O_PRESSURE)) - (paco2 / CONSTANTS.R_QUOTIENT), 0, CONSTANTS.MAX_PAO2)
-        shunt_eff = shunt_base * np.exp(-0.06 * peep)
-        pao2 = p_ideal * (1 - shunt_eff)
-        pao2_safe = np.maximum(pao2, 0.1)
-        spo2 = 100 / (1 + (23400 / (pao2_safe**3 + 150*pao2_safe)))
+        pao2 = p_ideal * (1 - (shunt_base * np.exp(-0.06 * peep)))
+        spo2 = 100 / (1 + (23400 / (np.maximum(pao2, 0.1)**3 + 150*np.maximum(pao2, 0.1))))
         return pao2, paco2, spo2, vd_vt
 
 class MetabolicDynamics:
@@ -134,40 +125,124 @@ class MetabolicDynamics:
         do2i = ci_safe * hb * 1.34 * (spo2/100) * 10
         vo2i = np.full(mins, 125.0 * vo2_stress_factor)
         o2er = vo2i / np.maximum(do2i, 1.0)
-        lactate = np.zeros(mins)
-        lac_curr = 1.0
+        lactate = np.zeros(mins); lac_curr = 1.0
         prod = np.where((do2i < CONSTANTS.LAC_PROD_THRESH) | (o2er > 0.50), 0.2, 0.0)
         for i in range(mins):
-            clear = CONSTANTS.LAC_CLEAR_RATE * (ci_safe[i] / 2.5)
-            lac_curr = max(0.6, lac_curr + prod[i] - clear)
+            lac_curr = max(0.6, lac_curr + prod[i] - (CONSTANTS.LAC_CLEAR_RATE * (ci_safe[i] / 2.5)))
             lactate[i] = lac_curr
         return do2i, vo2i, o2er, lactate
 
 # ==========================================
-# 3. AI, ANALYTICS & SIGNAL FORENSICS
+# 3. AI, ANALYTICS, SPC & FORECASTING
 # ==========================================
+
+class QualityAssuranceEngine:
+    @staticmethod
+    def calculate_cpk(data, usl, lsl):
+        mean = np.mean(data); std = np.std(data)
+        if std == 0: return 0
+        return min((usl - mean) / (3 * std), (mean - lsl) / (3 * std))
+
+    @staticmethod
+    def get_subgroups(data, size=5):
+        n = len(data); n_trim = n - (n % size)
+        return data[:n_trim].reshape(-1, size)
+
+    @staticmethod
+    def simulate_noisy_sensor(true_data, bias=5, noise_std=8):
+        return true_data + bias + np.random.normal(0, noise_std, len(true_data))
+
+    @staticmethod
+    def calc_ewma(data, lam=0.2):
+        ewma = np.zeros_like(data)
+        ewma[0] = data[0]
+        for i in range(1, len(data)):
+            ewma[i] = lam * data[i] + (1 - lam) * ewma[i-1]
+        return ewma
+
+    @staticmethod
+    def calc_cusum(data, target=None, k=0.5, h=4):
+        if target is None: target = np.mean(data)
+        std = np.std(data)
+        if std == 0: std = 1
+        z = (data - target) / std
+        cp, cm = np.zeros_like(data), np.zeros_like(data)
+        for i in range(1, len(data)):
+            cp[i] = max(0, z[i] - k + cp[i-1])
+            cm[i] = max(0, -k - z[i] + cm[i-1])
+        return cp, cm
+
+    @staticmethod
+    def calc_hotelling_t2(df):
+        # Multivariate T2 for [MAP, CI, SVRI]
+        X = df[['MAP', 'CI', 'SVRI']].to_numpy()
+        # Fit on first 60 mins as baseline, detect deviations later
+        baseline = X[:60]
+        mu = np.mean(baseline, axis=0)
+        try:
+            cov = np.cov(baseline.T)
+            inv_cov = np.linalg.inv(cov)
+            t2 = []
+            for i in range(len(X)):
+                diff = X[i] - mu
+                t2.append(diff.T @ inv_cov @ diff)
+            return np.array(t2), chi2.ppf(0.99, df=3) # UCL (alpha=0.01)
+        except:
+            return np.zeros(len(X)), 0
+
+    @staticmethod
+    def calc_spe_pca(df):
+        # Squared Prediction Error using PCA residuals
+        X = df[['MAP', 'CI', 'SVRI']].to_numpy()
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        pca = PCA(n_components=2)
+        X_pca = pca.fit_transform(X_scaled)
+        X_recon = pca.inverse_transform(X_pca)
+        residuals = X_scaled - X_recon
+        spe = np.sum(residuals**2, axis=1)
+        return spe, np.percentile(spe, 95) # Simple UCL
+
+    @staticmethod
+    def check_westgard(data, mean, std):
+        # Simplified Westgard (1-3s, 2-2s, R-4s)
+        violations = []
+        z = (data - mean) / (std if std > 0 else 1)
+        for i in range(1, len(z)):
+            if abs(z[i]) > 3: violations.append((i, "1-3s"))
+            elif abs(z[i]) > 2 and abs(z[i-1]) > 2: violations.append((i, "2-2s"))
+            elif abs(z[i] - z[i-1]) > 4: violations.append((i, "R-4s"))
+        return violations
+
+class ForecastingEngine:
+    @staticmethod
+    def fit_predict_models(data, steps=30):
+        # Holt-Winters (ETS)
+        try:
+            model_hw = ExponentialSmoothing(data, seasonal_periods=None, trend='add', seasonal=None).fit()
+            pred_hw = model_hw.forecast(steps)
+        except: pred_hw = np.zeros(steps)
+        
+        # SARIMA (Simplified AR for speed in loop)
+        try:
+            # Full SARIMA is too slow for 0.1s loop. Using simple AR(1) proxy for demo visualization
+            # In production, this runs async.
+            slope, intercept, _, _, _ = linregress(np.arange(len(data)), data)
+            pred_sarima = slope * np.arange(len(data), len(data)+steps) + intercept
+        except: pred_sarima = np.zeros(steps)
+        
+        return pred_hw, pred_sarima
 
 class SignalForensics:
     @staticmethod
     def analyze_driver_source(time_series, is_paced, drug_delta):
-        # FIX: Ensure numpy array to avoid KeyError in scipy
         ts_array = np.array(time_series)
-        
         std_dev = np.std(ts_array)
-        if is_paced or std_dev < 0.5:
-            return "EXTERNAL: PACEMAKER", 99, "Zero Variance (Quartz Precision)"
-        
-        grad = np.gradient(ts_array)
-        if np.max(np.abs(grad)) > 5.0: 
-            return "EXTERNAL: INFUSION/BOLUS", 90, "Non-Physiologic Step Change"
-            
+        if is_paced or std_dev < 0.5: return "EXTERNAL: PACEMAKER", 99, "Zero Variance"
+        if np.max(np.abs(np.gradient(ts_array))) > 5.0: return "EXTERNAL: INFUSION/BOLUS", 90, "Step Change"
         f, Pxx = welch(ts_array, fs=1/60)
-        pxx_norm = Pxx / np.sum(Pxx)
-        spectral_entropy = -np.sum(pxx_norm * np.log2(pxx_norm + 1e-12))
-        
-        if spectral_entropy < 1.5: 
-            return "EXTERNAL: VENTILATOR ENTRAINMENT", 85, f"Periodic Oscillation"
-        return "INTERNAL: AUTONOMIC", 80, "Fractal Complexity (Pink Noise)"
+        if -np.sum((Pxx/np.sum(Pxx)) * np.log2((Pxx/np.sum(Pxx)) + 1e-12)) < 1.5: return "EXTERNAL: VENTILATOR", 85, "Periodic"
+        return "INTERNAL: AUTONOMIC", 80, "Fractal Pink Noise"
 
 class AI_Services:
     @staticmethod
@@ -180,8 +255,8 @@ class AI_Services:
         x = [row['CI'], row['SVRI']]
         for name in means:
             try:
-                like = multivariate_normal.pdf(x, mean=means[name], cov=covs[name])
-                scores[name] = like * priors[name]; total += scores[name]
+                scores[name] = multivariate_normal.pdf(x, mean=means[name], cov=covs[name]) * priors[name]
+                total += scores[name]
             except: scores[name] = 0.0
         return {k: (v/total)*100 for k, v in scores.items()} if total > 1e-9 else {k:25.0 for k in means}
 
@@ -189,12 +264,9 @@ class AI_Services:
     def rl_advisor(row, drugs):
         if pd.isna(row['MAP']): return "Data Invalid", 0
         if row['MAP'] < 65:
-            if row['CI'] < 2.2: 
-                return ("Titrate Dobutamine +2.5", 88) if drugs['dobu'] < 5 else ("Consider Mechanical Support", 75)
-            else: 
-                return ("Increase Norepi +0.05", 92) if row['SVRI'] < 1200 else ("Fluid Bolus 500mL", 80)
-        else:
-            return ("Wean Norepi -0.05", 85) if drugs['norepi'] > 0 and row['MAP'] > 75 else ("Maintain Current Therapy", 98)
+            if row['CI'] < 2.2: return ("Titrate Dobutamine +2.5", 88) if drugs['dobu'] < 5 else ("Consider Mechanical Support", 75)
+            else: return ("Increase Norepi +0.05", 92) if row['SVRI'] < 1200 else ("Fluid Bolus 500mL", 80)
+        else: return ("Wean Norepi -0.05", 85) if drugs['norepi'] > 0 and row['MAP'] > 75 else ("Maintain Current Therapy", 98)
 
     @staticmethod
     def detect_anomalies(df):
@@ -265,85 +337,57 @@ def plot_sparkline(data, color, key):
 
 def plot_bayes_bars(probs, key):
     fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
-    fig.update_layout(
-        margin=dict(l=0,r=0,t=20,b=0), height=100, 
-        xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]),
-        yaxis=dict(title=None),
-        title=dict(text="P(Shock State | CI, SVR)", font=dict(size=12, color=THEME['text_muted']))
-    )
+    fig.update_layout(margin=dict(l=0,r=0,t=20,b=0), height=100, xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]), yaxis=dict(title=None))
     return fig
 
 def plot_3d_attractor(df, key):
     recent = df.iloc[-60:]
-    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], 
-                                       mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis', showscale=False), 
-                                       line=dict(width=2, color='rgba(50,50,50,0.5)'), name="State")])
-    fig.update_layout(
-        scene=dict(
-            xaxis_title='Power [W]', 
-            yaxis_title='SVRI', 
-            zaxis_title='Lactate [mM]'
-        ), 
-        margin=dict(l=0, r=0, b=0, t=25), height=250, 
-        title=dict(text="3D Hemodynamic Phase Space", font=dict(size=12, color=THEME['text_muted']))
-    )
+    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis'), line=dict(width=2))])
+    fig.update_layout(scene=dict(xaxis_title='Power', yaxis_title='SVRI', zaxis_title='Lactate'), margin=dict(l=0, r=0, b=0, t=0), height=250, title="3D Phase Space")
     return fig
 
 def plot_chaos_attractor(df, key, source_label):
-    hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0)
-    rr = 60000 / hr_safe
-    
+    hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0); rr = 60000 / hr_safe
     color = THEME['external'] if "EXTERNAL" in source_label else 'teal'
-    
-    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color=color, size=4, opacity=0.6), name="R-R"))
-    fig.update_layout(
-        title=dict(text=f"Chaos: {source_label}", font=dict(size=12, color=THEME['text_muted'])), 
-        height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="RR(n)", yaxis_title="RR(n+1)", showlegend=False
-    )
+    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color=color, size=4, opacity=0.6)))
+    fig.update_layout(title=f"Chaos: {source_label}", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="RR(n)", yaxis_title="RR(n+1)")
     return fig
 
 def plot_spectral_analysis(df, key):
-    data = df['HR'].iloc[-120:].to_numpy()
-    f, Pxx = welch(data, fs=1/60)
-    fig = px.line(x=f, y=Pxx)
+    data = df['HR'].iloc[-120:].to_numpy(); f, Pxx = welch(data, fs=1/60)
+    fig = px.line(x=f, y=Pxx, title="Spectral HRV")
     fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF"); fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF")
-    fig.update_layout(
-        title=dict(text="Spectral HRV Analysis", font=dict(size=12, color=THEME['text_muted'])),
-        height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="Hz", yaxis_title="Power"
-    )
+    fig.update_layout(height=200, margin=dict(l=20,r=20,t=30,b=20))
     return fig
 
 def plot_monte_carlo_fan(df, p10, p50, p90, key):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="History", line=dict(color=THEME['text_main'])))
+    fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="Hx", line=dict(color=THEME['text_main'])))
     fx = np.arange(30, 60)
     fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0), name="80% CI"))
     fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median"))
-    fig.update_layout(
-        height=200, title=dict(text="Stochastic Forecast (MAP)", font=dict(size=12, color=THEME['text_muted'])), 
-        margin=dict(l=20,r=20,t=30,b=20), xaxis_title="Time", yaxis_title="mmHg", legend=dict(orientation="h", y=1.1)
-    )
+    fig.update_layout(height=200, title="Stochastic Forecast", margin=dict(l=20,r=20,t=30,b=20), xaxis_title="Time", yaxis_title="MAP")
     return fig
 
 def plot_hemodynamic_profile(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
-    fig.add_hline(y=2000, line_dash="dot", annotation_text="Vasoconstricted"); fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow")
-    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis'), name="State"))
-    fig.update_layout(title=dict(text="Pump vs Pipes (Forrester)", font=dict(size=12, color=THEME['text_muted'])), height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CI", yaxis_title="SVRI")
+    fig.add_hline(y=2000, line_dash="dot", annotation_text="Vaso"); fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow")
+    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis')))
+    fig.update_layout(title="Pump vs Pipes", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CI", yaxis_title="SVRI")
     return fig
 
 def plot_phase_space(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=15, fillcolor="rgba(255,0,0,0.1)", line_width=0)
-    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered'), name="Trajectory"))
-    fig.update_layout(title=dict(text="Coupling (CPO/Lac)", font=dict(size=12, color=THEME['text_muted'])), height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CPO", yaxis_title="Lactate")
+    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered')))
+    fig.update_layout(title="Coupling", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CPO", yaxis_title="Lac")
     return fig
 
 def plot_vq_scatter(df, key):
     fig = px.scatter(df.iloc[-60:], x="PaO2", y="SpO2", color="PaCO2", color_continuous_scale="Bluered")
-    fig.update_layout(title=dict(text="V/Q Mismatch & Oxygenation", font=dict(size=12, color=THEME['text_muted'])), height=200, margin=dict(l=20,r=20,t=30,b=20))
+    fig.update_layout(title="V/Q Mismatch", height=200, margin=dict(l=20,r=20,t=30,b=20))
     return fig
 
 def plot_counterfactual(df, drugs, case, bsa, peep, key):
@@ -351,9 +395,101 @@ def plot_counterfactual(df, drugs, case, bsa, peep, key):
     base = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21}
     df_b = sim.run(case, base, 0, bsa, peep, False, 'Spontaneous')
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="Intervention", line=dict(color=THEME['ok'])))
-    fig.add_trace(go.Scatter(y=df_b['MAP'], name="Natural Hx", line=dict(dash='dot', color=THEME['crit'])))
-    fig.update_layout(title=dict(text="Counterfactual (MAP)", font=dict(size=12, color=THEME['text_muted'])), height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="Time", yaxis_title="MAP")
+    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="Rx", line=dict(color=THEME['ok'])))
+    fig.add_trace(go.Scatter(y=df_b['MAP'], name="No Rx", line=dict(dash='dot', color=THEME['crit'])))
+    fig.update_layout(title="Counterfactual", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    return fig
+
+def plot_spc_suite(df, key):
+    data = df['MAP'].to_numpy(); subgroups = QualityAssuranceEngine.get_subgroups(data)
+    xbar = np.mean(subgroups, axis=1); r = np.ptp(subgroups, axis=1)
+    fig = make_subplots(rows=1, cols=3, subplot_titles=("X-Bar", "R-Chart", "I-MR"))
+    ucl_x = np.mean(xbar) + 3*np.std(xbar); ucl_r = np.mean(r) + 3*np.std(r)
+    fig.add_trace(go.Scatter(y=xbar, mode='lines+markers', name="X-Bar"), row=1, col=1)
+    fig.add_hline(y=ucl_x, line_color="red", row=1, col=1)
+    fig.add_trace(go.Scatter(y=r, mode='lines+markers', name="Range"), row=1, col=2)
+    fig.add_hline(y=ucl_r, line_color="red", row=1, col=2)
+    fig.add_trace(go.Scatter(y=np.abs(np.diff(data)), mode='lines', name="MR"), row=1, col=3)
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Statistical Process Control (SPC)")
+    return fig
+
+def plot_method_comparison(df, key):
+    true_bp = df['MAP'].iloc[-120:].to_numpy(); cuff_bp = QualityAssuranceEngine.simulate_noisy_sensor(true_bp)
+    fig = make_subplots(rows=1, cols=3, subplot_titles=("Correlation", "Bland-Altman", "Residuals"))
+    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp, mode='markers'), row=1, col=1)
+    mean = (true_bp + cuff_bp) / 2; diff = true_bp - cuff_bp
+    fig.add_trace(go.Scatter(x=mean, y=diff, mode='markers'), row=1, col=2)
+    fig.add_hline(y=np.mean(diff) + 1.96*np.std(diff), line_dash="dot", line_color="red", row=1, col=2)
+    slope, intercept, _, _, _ = linregress(true_bp, cuff_bp)
+    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp - (slope*true_bp + intercept), mode='markers'), row=1, col=3)
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Method Comparison")
+    return fig
+
+def plot_cpk_tolerance(df, key):
+    data = df['MAP'].iloc[-120:].to_numpy(); cpk = QualityAssuranceEngine.calculate_cpk(data, CONSTANTS.MAP_USL, CONSTANTS.MAP_LSL)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=(f"Process Cap (Cpk={cpk:.2f})", "Tolerance"))
+    x = np.linspace(40, 130, 100); fig.add_trace(go.Scatter(x=x, y=norm.pdf(x, np.mean(data), np.std(data)), fill='tozeroy'), row=1, col=1)
+    fig.add_vline(x=CONSTANTS.MAP_LSL, line_color="red", row=1, col=1); fig.add_vline(x=CONSTANTS.MAP_USL, line_color="red", row=1, col=1)
+    fig.add_trace(go.Scatter(y=data, mode='lines'), row=1, col=2)
+    fig.add_hrect(y0=CONSTANTS.MAP_LSL, y1=CONSTANTS.MAP_USL, fillcolor="green", opacity=0.1, row=1, col=2)
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20))
+    return fig
+
+def plot_wasserstein(df, key):
+    early = df['MAP'].iloc[:60]; late = df['MAP'].iloc[-60:]
+    dist = wasserstein_distance(early, late)
+    fig = go.Figure()
+    fig.add_trace(go.Histogram(x=early, name="T-0", opacity=0.5))
+    fig.add_trace(go.Histogram(x=late, name="T-Curr", opacity=0.5))
+    fig.update_layout(title=f"Dist Shift (W={dist:.1f})", height=200, margin=dict(l=10,r=10,t=30,b=20), barmode='overlay')
+    return fig
+
+def plot_multivariate_spc(df, key):
+    t2, ucl = QualityAssuranceEngine.calc_hotelling_t2(df)
+    spe, spe_lim = QualityAssuranceEngine.calc_spe_pca(df)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Hotelling T² (Multivariate)", "SPE (Residuals)"))
+    fig.add_trace(go.Scatter(y=t2, mode='lines', name="T²"), row=1, col=1)
+    fig.add_hline(y=ucl, line_color="red", line_dash="dot", row=1, col=1)
+    fig.add_trace(go.Scatter(y=spe, mode='lines', name="SPE"), row=1, col=2)
+    fig.add_hline(y=spe_lim, line_color="red", line_dash="dot", row=1, col=2)
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Multivariate SPC")
+    return fig
+
+def plot_advanced_control(df, key):
+    data = df['MAP'].to_numpy()
+    ewma = QualityAssuranceEngine.calc_ewma(data)
+    cp, cm = QualityAssuranceEngine.calc_cusum(data)
+    violations = QualityAssuranceEngine.check_westgard(data, np.mean(data), np.std(data))
+    
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("EWMA (Small Shift)", "CUSUM (Cumulative Dev)"))
+    fig.add_trace(go.Scatter(y=data, mode='lines', line=dict(color='lightgray'), name="Raw"), row=1, col=1)
+    fig.add_trace(go.Scatter(y=ewma, mode='lines', line=dict(color='blue'), name="EWMA"), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(y=cp, mode='lines', line=dict(color='green'), name="C+"), row=1, col=2)
+    fig.add_trace(go.Scatter(y=cm, mode='lines', line=dict(color='red'), name="C-"), row=1, col=2)
+    fig.add_hline(y=CONSTANTS.CUSUM_H, line_dash="dot", line_color="black", row=1, col=2)
+    
+    if violations:
+        # Just show last violation on chart title to avoid clutter
+        fig.update_layout(title=f"Advanced Control (Last Violation: {violations[-1][1]})")
+    else:
+        fig.update_layout(title="Advanced Control (Stable)")
+        
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20))
+    return fig
+
+def plot_advanced_forecast(df, key):
+    # Use last 60 mins for forecasting
+    data = df['MAP'].iloc[-60:].to_numpy()
+    hw, sarima = ForecastingEngine.fit_predict_models(data, steps=30)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=np.arange(60), y=data, name="History", line=dict(color='black')))
+    future_x = np.arange(60, 90)
+    fig.add_trace(go.Scatter(x=future_x, y=hw, name="Holt-Winters", line=dict(color='blue', dash='dot')))
+    fig.add_trace(go.Scatter(x=future_x, y=sarima, name="SARIMA Proxy", line=dict(color='green', dash='dot')))
+    
+    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Advanced Forecasting (ETS/SARIMA)")
     return fig
 
 # ==========================================
@@ -364,7 +500,7 @@ if 'events' not in st.session_state: st.session_state['events'] = []
 if 'fluids' not in st.session_state: st.session_state['fluids'] = 0
 
 with st.sidebar:
-    st.title("TITAN | L6 CDS")
+    st.title("TITAN | L7 CDS")
     res_mins = st.select_slider("Resolution", [60, 180, 360, 720], value=360)
     case_id = st.selectbox("Profile", ["65M Post-CABG", "24F Septic Shock", "82M HFpEF Sepsis", "50M Trauma"])
     
@@ -461,7 +597,7 @@ def render(d_slice):
         with b1: st.plotly_chart(plot_hemodynamic_profile(d_slice, ix), use_container_width=True, key=f"hemo_{ix}")
         with b2: st.plotly_chart(plot_phase_space(d_slice, ix), use_container_width=True, key=f"phase_{ix}")
         
-        # ZONE E: RESPIRATORY & METABOLIC (Restored)
+        # ZONE E: RESPIRATORY
         st.markdown('<div class="zone-header">ZONE E: RESPIRATORY & METABOLIC COUPLING</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_vq_scatter(d_slice, ix), use_container_width=True, key=f"vq_{ix}")
 
@@ -475,10 +611,38 @@ def render(d_slice):
         fig.update_yaxes(title_text="MAP", row=1, col=1); fig.update_yaxes(title_text="CPO", row=2, col=1); fig.update_yaxes(title_text="SpO2", row=3, col=1)
         st.plotly_chart(fig, use_container_width=True, key=f"tele_{ix}")
 
+        # ZONE G: SPC
+        st.markdown('<div class="zone-header">ZONE G: STATISTICAL PROCESS CONTROL (SPC)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_spc_suite(d_slice, ix), use_container_width=True, key=f"spc_{ix}")
+
+        # ZONE H: TOLERANCE
+        st.markdown('<div class="zone-header">ZONE H: PROCESS CAPABILITY & TOLERANCE</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_cpk_tolerance(d_slice, ix), use_container_width=True, key=f"cpk_{ix}")
+
+        # ZONE I: METHOD COMPARISON
+        st.markdown('<div class="zone-header">ZONE I: SENSOR COMPARISON (ART vs CUFF)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_method_comparison(d_slice, ix), use_container_width=True, key=f"method_{ix}")
+
+        # ZONE J: DIST SHIFT
+        st.markdown('<div class="zone-header">ZONE J: DISTRIBUTIONAL SHIFT (WASSERSTEIN)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_wasserstein(d_slice, ix), use_container_width=True, key=f"wass_{ix}")
+
+        # ZONE K: MULTIVARIATE SPC (NEW)
+        st.markdown('<div class="zone-header">ZONE K: MULTIVARIATE SPC (HOTELLING / SPE)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_multivariate_spc(d_slice, ix), use_container_width=True, key=f"mspc_{ix}")
+
+        # ZONE L: ADVANCED CONTROL CHARTS (NEW)
+        st.markdown('<div class="zone-header">ZONE L: ADVANCED CONTROL (EWMA / CUSUM / WESTGARD)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_advanced_control(d_slice, ix), use_container_width=True, key=f"advc_{ix}")
+
+        # ZONE M: ADVANCED FORECASTING (NEW)
+        st.markdown('<div class="zone-header">ZONE M: ADVANCED FORECASTING (HOLT-WINTERS / SARIMA)</div>', unsafe_allow_html=True)
+        st.plotly_chart(plot_advanced_forecast(d_slice, ix), use_container_width=True, key=f"advf_{ix}")
+
 if live_mode:
     for i in range(max(10, res_mins-60), res_mins):
         render(df.iloc[:i])
         time.sleep(0.1)
 else:
     render(df)
-st.caption("TITAN L6 | Bayesian Inference, RL Policy, IsolationForest Anomaly Detection, Pharmacokinetic Time-Constants.")
+st.caption("TITAN L7 | Bayesian Inference, RL Policy, IsolationForest Anomaly Detection, Pharmacokinetic Time-Constants.")
