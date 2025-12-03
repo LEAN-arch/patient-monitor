@@ -8,6 +8,7 @@ from scipy.signal import welch
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
+import time
 
 # ==========================================
 # 1. SYSTEM CONFIGURATION & MEDICAL THEME
@@ -80,24 +81,24 @@ class PharmaEngine:
     """Pharmacodynamic Simulation (Receptor Kinetics)."""
     @staticmethod
     def apply_drugs(map_val, co, hr, svr, drugs):
-        # 1. Norepinephrine (Alpha-1 Agonist): ↑ SVR, ↑ MAP, mild ↑ CO (beta), reflex ↓ HR
-        ne_effect = drugs['norepi'] * 2.5 # Potency factor
-        svr += (ne_effect * 800) # Strong vasoconstriction
+        # 1. Norepinephrine (Alpha-1 Agonist)
+        ne_effect = drugs['norepi'] * 2.5 
+        svr += (ne_effect * 800) 
         map_val += (ne_effect * 25)
         co += (ne_effect * 0.5)
         
-        # 2. Vasopressin (V1 Agonist): ↑↑ SVR (Non-linear), Neutral CO
+        # 2. Vasopressin (V1 Agonist)
         vaso_effect = drugs['vaso'] * 4.0 
         svr += (vaso_effect * 600)
         map_val += (vaso_effect * 15)
         
-        # 3. Dobutamine (Beta-1/2 Agonist): ↑↑ CO, ↓ SVR (Vasodilation), ↑ HR
+        # 3. Dobutamine (Beta-1/2 Agonist)
         dobu_effect = drugs['dobu'] * 2.0
         co += (dobu_effect * 2.5)
         hr += (dobu_effect * 15)
-        svr -= (dobu_effect * 300) # Vasodilation
+        svr -= (dobu_effect * 300) 
         
-        # 4. Beta Blockers: ↓ HR, ↓ CO, Neutral MAP (compensated)
+        # 4. Beta Blockers
         bb_effect = drugs['bb'] * 1.5
         hr -= (bb_effect * 20)
         co -= (bb_effect * 0.8)
@@ -118,23 +119,18 @@ class PhysiologyEngine:
     @staticmethod
     def resp_module(pao2_target, shunt_fraction, fio2):
         """Simulates Oxygenation based on Shunt and FiO2."""
-        # Ideal alveolar gas equation approx
         p_ideal = (fio2 * 713) - 40/0.8 
-        # Shunt effect
         pao2 = p_ideal * (1 - shunt_fraction)
-        # SpO2 Sigmoid Curve (Severinghaus)
         spo2 = 100 / (1 + (23400 / (pao2**3 + 150*pao2)) )
         return pao2, spo2
 
     @staticmethod
     def fluid_responsiveness(ppv, fluid_bolus_ml):
         """Starling Curve Logic."""
-        # If PPV > 12%, patient is fluid responsive (Steep part of Starling curve)
-        # CO gain per 500mL
         if ppv > 12:
             return (fluid_bolus_ml / 500) * 1.2 # L/min gain
         else:
-            return (fluid_bolus_ml / 500) * 0.1 # Minimal gain (Flat part)
+            return (fluid_bolus_ml / 500) * 0.1 # Minimal gain
 
 # ==========================================
 # 3. PATIENT SIMULATOR (ENHANCED)
@@ -145,14 +141,11 @@ class PatientSimulator:
         self.t = np.arange(mins)
 
     def get_data(self, profile, drugs, fluids, age, chronic, drift, seed):
-        # --- 1. BASELINE MODIFIERS (PATIENT PROFILE) ---
-        # Elderly: Stiff arteries (↑ SVR), Low reserve (↓ CO)
+        # --- 1. BASELINE MODIFIERS ---
         age_mod_svr = 1.2 if age > 70 else 1.0
         age_mod_co = 0.8 if age > 70 else 1.0
-        
-        # Chronic Disease
         hf_mod = 0.7 if "Heart Failure" in chronic else 1.0
-        copd_mod = 0.85 if "COPD" in chronic else 1.0 # SpO2 penalty
+        copd_mod = 0.85 if "COPD" in chronic else 1.0
         
         # --- 2. SCENARIO INITIALIZATION ---
         if profile == "Healthy":
@@ -164,7 +157,6 @@ class PatientSimulator:
         elif profile == "Cardiogenic Shock":
             p = {'hr': (90, 105), 'map': (70, 55), 'co': (3.5, 2.5), 'vol': 2.0, 'shunt': 0.20}
 
-        # Apply Drift (Worsening over time if enabled)
         drift_factor = np.linspace(1.0, drift, self.mins)
         
         # --- 3. GENERATE RAW RANDOM WALKS ---
@@ -174,56 +166,43 @@ class PatientSimulator:
         
         # --- 4. RESPIRATORY SIMULATION ---
         rr = PhysiologyEngine.brownian_bridge(self.mins, 14, 22 if "Shock" in profile else 16, 2.0, seed+3)
-        paco2 = 40 + (16 - rr) * 1.5 # Hypercapnia logic
+        paco2 = 40 + (16 - rr) * 1.5 
         
-        # Calculate PaO2/SpO2 based on Shunt & FiO2
         pao2_arr, spo2_arr = [], []
         for i in range(self.mins):
             pa, sp = PhysiologyEngine.resp_module(0, p['shunt'] / copd_mod, drugs['fio2'])
-            # Add noise
             pao2_arr.append(pa + np.random.normal(0, 5))
             spo2_arr.append(sp)
             
-        # --- 5. DERIVED METRICS & FLUID PHYSICS ---
-        # Pulse Pressure Variation (PPV) - Interaction of Heart & Lung
-        # PPV is high when Heart is preload dependent (hypovolemia)
+        # --- 5. DERIVED METRICS ---
         ppv_base = 15 if "Shock" in profile else 5
-        ppv = ppv_base + (np.sin(self.t/10) * 3) # Respiratory swing
-        
-        # Apply Fluids (Starling Curve)
+        ppv = ppv_base + (np.sin(self.t/10) * 3) 
         co_fluid_gain = PhysiologyEngine.fluid_responsiveness(np.mean(ppv), fluids)
         
-        # --- 6. PHARMACODYNAMICS APPLICATION ---
-        # SVR Base Calculation
+        # --- 6. PHARMACODYNAMICS ---
         svr_raw = ((map_raw - 8) / co_raw) * 800 * age_mod_svr
-        
         final_map, final_co, final_hr, final_svr = [], [], [], []
         
         for i in range(self.mins):
-            # Apply Drugs & Fluids per timestep
             m, c, h, s = PharmaEngine.apply_drugs(map_raw[i], co_raw[i] + co_fluid_gain, hr[i], svr_raw[i], drugs)
             final_map.append(m)
             final_co.append(c)
             final_hr.append(h)
             final_svr.append(s)
             
-        # --- 7. METABOLIC (LACTATE) ---
-        # DO2 = CO * Hb * 1.34 * SpO2
-        hb = 12.0 # Assume constant for now
+        # --- 7. METABOLIC ---
+        hb = 12.0
         do2 = np.array(final_co) * hb * 1.34 * (np.array(spo2_arr)/100) * 10
-        vo2 = do2 * 0.25 # Assume 25% extraction initially
-        
-        # Lactate Accumulation (Supply/Demand Mismatch)
+        vo2 = do2 * 0.25 
         lactate = np.zeros(self.mins)
         lac_curr = 1.0
         for i in range(self.mins):
-            # If DO2 < 400 (Critical Threshold), Lactate Rises
             production = 0.1 if do2[i] < 400 else 0.0
             clearance = 0.05 if do2[i] > 500 else 0.01
             lac_curr = max(0.5, lac_curr + production - clearance)
             lactate[i] = lac_curr
 
-        # --- 8. DATAFRAME CONSTRUCTION ---
+        # --- 8. DATAFRAME ---
         df = pd.DataFrame({
             "Time": self.t, "HR": final_hr, "MAP": final_map, "CO": final_co, "SVR": final_svr,
             "Lactate": lactate, "SpO2": spo2_arr, "PaO2": pao2_arr, "PaCO2": paco2, "RR": rr,
@@ -231,12 +210,9 @@ class PatientSimulator:
             "Creatinine": np.linspace(0.8, 1.2 if map_raw[-1] < 60 else 0.9, self.mins)
         })
         
-        # Advanced Derivatives
         df['CPO'] = (df['MAP'] * df['CO']) / 451
-        df['SI'] = df['HR'] / df['MAP'] # Simplified Shock Index
-        df['MSI'] = df['HR'] / (df['MAP'] * 1.0) # Modified SI
-        
-        # Fluid Responsiveness Index
+        df['SI'] = df['HR'] / df['MAP'] 
+        df['MSI'] = df['HR'] / (df['MAP'] * 1.0) 
         df['SV'] = (df['CO'] * 1000) / df['HR']
         
         return df
@@ -247,9 +223,7 @@ class PatientSimulator:
 class AI_Analytics:
     @staticmethod
     def calculate_stability_score(row):
-        """Composite Early Warning Score (0-100)."""
         score = 100
-        # Penalties
         if row['MAP'] < 65: score -= 20
         if row['Lactate'] > 2: score -= 20
         if row['CPO'] < 0.6: score -= 30
@@ -259,36 +233,29 @@ class AI_Analytics:
 
     @staticmethod
     def predict_trajectory(df, target_col, minutes=30):
-        """Linear Regression for short-term trajectory."""
-        recent = df.iloc[-30:] # Last 30 mins
+        recent = df.iloc[-30:]
         X = recent.index.values.reshape(-1, 1)
         y = recent[target_col].values
         model = LinearRegression().fit(X, y)
-        
         future_X = np.arange(df.index[-1], df.index[-1]+minutes).reshape(-1, 1)
         future_y = model.predict(future_X)
-        return future_y[-1] # End point
+        return future_y[-1]
 
     @staticmethod
     def cluster_phenotypes(df):
-        """K-Means Clustering to identify phenotype."""
-        # Features: CI, SVR, Lactate
         X = df[['CO', 'SVR', 'Lactate']].iloc[-60:]
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         kmeans = KMeans(n_clusters=3, random_state=42).fit(X_scaled)
-        # Assign current point to a cluster center
         center = kmeans.cluster_centers_[kmeans.labels_[-1]]
-        # Logic to name the cluster (Simplified)
         if center[1] > 0.5: return "Vasoconstricted / Cardiogenic"
         elif center[0] > 0.5: return "Vasoplegic / High Flow"
         else: return "Uncompensated / Metabolic"
 
 # ==========================================
-# 5. VISUALIZATION COMPONENTS (MEDICAL GRADE)
+# 5. VISUALIZATION COMPONENTS
 # ==========================================
 def plot_3d_attractor(df):
-    """3D Phase Space: SVR vs Lactate vs CPO."""
     recent = df.iloc[-60:]
     fig = go.Figure(data=[go.Scatter3d(
         x=recent['CPO'], y=recent['SVR'], z=recent['Lactate'],
@@ -304,26 +271,20 @@ def plot_3d_attractor(df):
     return fig
 
 def plot_counterfactual(df, drugs, profile):
-    """Projected Effectiveness: Baseline vs Intervention."""
-    # Run a quick sim without drugs (Baseline)
     sim = PatientSimulator(mins=60)
-    # Using 0 drugs for baseline comparison
     base_drugs = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21} 
-    # Simplified baseline generation for visual comparison
     df_base = sim.get_data(profile, base_drugs, 0, 50, [], 1.0, 42)
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="With Intervention", line=dict(color=THEME['ok'])))
     fig.add_trace(go.Scatter(y=df_base['MAP'].iloc[-60:], name="Projected Untreated", line=dict(dash='dot', color=THEME['crit'])))
-    fig.update_layout(title="Intervention Effectiveness Projection (MAP)", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    fig.update_layout(title="Intervention Effectiveness Projection (MAP)", height=250, margin=dict(l=20,r=20,t=30,b=20))
     return fig
 
 def plot_spectral_analysis(df):
-    """Fourier Transform of HRV."""
-    # FIX: Convert Series slice to numpy array to avoid KeyError/tuple indexing issue in scipy
+    # Fix: Convert to numpy to avoid scipy KeyError with Pandas series slices
     data = df['HR'].iloc[-120:].to_numpy()
-    
-    f, Pxx = welch(data, fs=1/60) # 1 sample per min
+    f, Pxx = welch(data, fs=1/60) 
     fig = px.line(x=f, y=Pxx, title="HRV Spectral Density (Autonomic Tone)")
     fig.update_xaxes(title="Frequency (Hz)")
     fig.update_yaxes(title="Power")
@@ -341,21 +302,17 @@ st.markdown(STYLING, unsafe_allow_html=True)
 if 'events' not in st.session_state: st.session_state['events'] = []
 if 'fluids_given' not in st.session_state: st.session_state['fluids_given'] = 0
 
-# --- SIDEBAR (CONTROLS) ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.title("TITAN | L4 CDS")
-    
-    # 1. Random Seed & Sim
     seed = st.number_input("Random Seed", 1, 1000, 42)
     drift = st.slider("Scenario Drift (Deterioration)", 1.0, 2.0, 1.0, 0.1)
     
-    # 2. Patient Profile
     st.markdown("### 👤 Patient Profile")
     age = st.slider("Age", 18, 95, 65)
     chronic = st.multiselect("Comorbidities", ["Heart Failure", "COPD", "CKD"])
     scenario = st.selectbox("Presenting Phenotype", ["Healthy", "Compensated Sepsis", "Vasoplegic Shock", "Cardiogenic Shock"])
     
-    # 3. Interventions
     st.markdown("### 💉 Interventions")
     col_d1, col_d2 = st.columns(2)
     with col_d1:
@@ -365,17 +322,13 @@ with st.sidebar:
         dobu = st.slider("Dobutamine", 0.0, 10.0, 0.0, 1.0)
         bb = st.slider("Beta-Blocker", 0.0, 1.0, 0.0, 0.1)
     
-    # Respiratory
     fio2 = st.slider("FiO2", 0.21, 1.0, 0.40)
     
-    # Fluids
     if st.button("💧 Give 500mL Bolus"):
         st.session_state['fluids_given'] += 500
         st.session_state['events'].append({"time": 360, "event": "Fluid Bolus"})
     
     st.caption(f"Total Fluids: {st.session_state['fluids_given']} mL")
-
-    # Real-Time Toggle
     if st.checkbox("Live Mode (Simulate 1hr)"):
         st.spinner("Simulating real-time data flow...")
 
@@ -384,20 +337,19 @@ drug_dict = {'norepi': norepi, 'vaso': vaso, 'dobu': dobu, 'bb': bb, 'fio2': fio
 sim = PatientSimulator(mins=360)
 df = sim.get_data(scenario, drug_dict, st.session_state['fluids_given'], age, chronic, drift, seed)
 
-# Current State
 cur = df.iloc[-1]
 prev = df.iloc[-60]
 
-# --- AI ANALYTICS COMPUTATION ---
+# --- AI ANALYTICS ---
 stability = AI_Analytics.calculate_stability_score(cur)
 phenotype = AI_Analytics.cluster_phenotypes(df)
 pred_map = AI_Analytics.predict_trajectory(df, 'MAP', 30)
 
 # ==========================================
-# UI LAYOUT
+# SINGLE PANE UI LAYOUT
 # ==========================================
 
-# --- 1. TOP BANNER (AI & ALERTS) ---
+# --- 1. BANNER ---
 alert_cls = "crit-pulse" if stability < 50 else ""
 st.markdown(f"""
 <div class="status-banner" style="border-left-color: {THEME['ai']};">
@@ -413,7 +365,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. ZONE A: 3D VISUALIZATION & PREDICTIONS ---
+# --- 2. ZONE A: 3D & AI ---
 c1, c2 = st.columns([2, 1])
 with c1:
     st.plotly_chart(plot_3d_attractor(df), use_container_width=True)
@@ -422,29 +374,25 @@ with c2:
     st.metric("Predicted MAP", f"{pred_map:.1f}", f"{pred_map - cur['MAP']:.1f}")
     st.metric("Lactate Clearance", f"{(prev['Lactate'] - cur['Lactate'])/prev['Lactate']*100:.1f}%", help="Last hour clearance")
     st.progress(stability/100, "Stability Score")
+    
+    st.markdown("**🔍 Feature Drivers**")
+    st.bar_chart({"MAP": 0.4, "Lactate": 0.3, "CPO": 0.2, "HR": 0.1}, height=120)
 
-# --- 3. ZONE B: 6-PACK METRICS (WITH MINI-CARDS) ---
+# --- 3. ZONE B: METRICS ---
 st.markdown('<div class="zone-header">ZONE B: HEMODYNAMICS & METABOLICS</div>', unsafe_allow_html=True)
 m1, m2, m3, m4, m5, m6 = st.columns(6)
-
 def arrow(val): return "↑" if val > 0 else "↓" if val < 0 else "→"
-
-def metric_card(col, label, val, unit, delta, color_group="text_main"):
-    col.metric(
-        label=label,
-        value=f"{val:.1f} {unit}",
-        delta=f"{arrow(delta)} {abs(delta):.1f}",
-        delta_color="inverse"
-    )
+def metric_card(col, label, val, unit, delta):
+    col.metric(label, f"{val:.1f} {unit}", f"{arrow(delta)} {abs(delta):.1f}", delta_color="inverse")
 
 metric_card(m1, "MAP", cur['MAP'], "mmHg", cur['MAP']-prev['MAP'])
 metric_card(m2, "Heart Rate", cur['HR'], "bpm", cur['HR']-prev['HR'])
 metric_card(m3, "Cardiac Power", cur['CPO'], "W", cur['CPO']-prev['CPO'])
 metric_card(m4, "Lactate", cur['Lactate'], "mM", cur['Lactate']-prev['Lactate'])
-metric_card(m5, "DO2 (Delivery)", cur['DO2'], "mL/min", cur['DO2']-prev['DO2'])
+metric_card(m5, "DO2", cur['DO2'], "ml/m", cur['DO2']-prev['DO2'])
 metric_card(m6, "SpO2", cur['SpO2'], "%", cur['SpO2']-prev['SpO2'])
 
-# --- 4. ZONE C: RESPIRATORY & FLUID MODULE ---
+# --- 4. ZONE C: RESPIRATORY ---
 st.markdown('<div class="zone-header">ZONE C: RESPIRATORY & FLUID STATUS</div>', unsafe_allow_html=True)
 r1, r2, r3, r4 = st.columns(4)
 r1.metric("PaO2 / FiO2", f"{cur['PaO2']/drug_dict['fio2']:.0f}", "Est. Shunt") 
@@ -452,38 +400,37 @@ r2.metric("PaCO2 (Vent)", f"{cur['PaCO2']:.1f}", "mmHg")
 r3.metric("PPV (Fluid Resp)", f"{cur['PPV']:.1f}%", "Responsive" if cur['PPV']>12 else "Non-Resp", delta_color="normal")
 r4.metric("Shock Index", f"{cur['SI']:.2f}", ">0.9 Crit")
 
-# --- 5. ZONE D: DEEP ANALYTICS (TABS) ---
-tab_trend, tab_corr, tab_spec, tab_event = st.tabs(["📈 Telemetry", "🔥 Correlations", "🌊 Spectral HRV", "📝 Events"])
+# --- 5. ZONE D: DEEP ANALYTICS (SINGLE PANE) ---
+st.markdown('<div class="zone-header">ZONE D: ADVANCED ANALYTICS & TELEMETRY</div>', unsafe_allow_html=True)
 
-with tab_trend:
-    # Telemetry with Event Annotation
-    fig_tele = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05)
-    fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['MAP'], name="MAP", line=dict(color=THEME['hemo'])), row=1, col=1)
-    fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
-    fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['SVR'], name="SVR", line=dict(color=THEME['warn'])), row=3, col=1)
-    
-    # Annotate Events
-    for e in st.session_state['events']:
-        fig_tele.add_vline(x=e['time'], line_dash="dash", line_color="green")
-        
-    st.plotly_chart(fig_tele, use_container_width=True)
+# Row 1: Telemetry
+fig_tele = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, subplot_titles=("Hemodynamics", "Perfusion", "Resistance"))
+fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['MAP'], name="MAP", line=dict(color=THEME['hemo'])), row=1, col=1)
+fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
+fig_tele.add_trace(go.Scatter(x=df['Time'], y=df['SVR'], name="SVR", line=dict(color=THEME['warn'])), row=3, col=1)
+for e in st.session_state['events']: fig_tele.add_vline(x=e['time'], line_dash="dash", line_color="green")
+fig_tele.update_layout(height=400, margin=dict(l=0,r=0,t=20,b=20), template="plotly_white")
+st.plotly_chart(fig_tele, use_container_width=True)
 
-with tab_corr:
-    # Feature Importance / Heatmap
+# Row 2: Analytics Grid
+a1, a2, a3 = st.columns(3)
+
+with a1:
+    st.markdown("**🔥 Correlation Heatmap**")
     corr = df[['MAP','HR','CO','SVR','Lactate','CPO','PPV']].corr()
-    fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r', title="Physiologic Correlation Matrix")
+    fig_corr = px.imshow(corr, text_auto=True, color_continuous_scale='RdBu_r')
+    fig_corr.update_layout(height=300)
     st.plotly_chart(fig_corr, use_container_width=True)
-    
-    # Feature Importance for Stability (Mock SHAP)
-    st.bar_chart({"MAP": 0.4, "Lactate": 0.3, "CPO": 0.2, "HR": 0.1})
 
-with tab_spec:
+with a2:
+    st.markdown("**🌊 Spectral HRV Analysis**")
     st.plotly_chart(plot_spectral_analysis(df), use_container_width=True)
 
-with tab_event:
-    st.write(st.session_state['events'])
-    # Effectiveness Projection
+with a3:
+    st.markdown("**💊 Intervention Projection**")
     st.plotly_chart(plot_counterfactual(df, drug_dict, scenario), use_container_width=True)
+    if st.session_state['events']:
+        st.markdown("**📝 Event Log**")
+        st.write(st.session_state['events'])
 
-# --- DISCLAIMER ---
 st.caption("TITAN L4 CDS | Validated Modules: PharmKinetics, Starling Fluid Physics, Spectral HRV. | For Investigational Use Only.")
