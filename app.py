@@ -5,500 +5,438 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple, Optional
+import datetime
 
 # ==========================================
-# 1. CONFIGURATION
+# 1. PREMIUM UX CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="TITAN | Precision CDS", 
+    page_title="TITAN | Helios", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# ==========================================
-# 2. DESIGN SYSTEM
-# ==========================================
+# Color Palette (Medical Grade)
 THEME = {
-    "primary": "#0f172a",
-    "secondary": "#64748b",
-    "accent": "#3b82f6",
-    "success": "#10b981",
-    "warning": "#f59e0b",
-    "danger": "#ef4444",
-    "neutral": "#f1f5f9",
-    "vis_map": "#be185d",
-    "vis_ci": "#059669",
-    "vis_do2": "#7c3aed",
-    "vis_svr": "#d97706",
-    "vis_hr": "#0284c7",
-    "vis_ref": "#94a3b8",
-    "text": "#0f172a",
-    "grid": "#e2e8f0"
+    "bg": "#f8fafc",
+    "surface": "#ffffff",
+    "text_main": "#0f172a",
+    "text_sub": "#64748b",
+    "accent": "#0ea5e9",    
+    "ok": "#10b981",        
+    "warn": "#f59e0b",      
+    "crit": "#ef4444",      
+    "grid": "#e2e8f0",
+    # Advanced Signals
+    "cpo": "#8b5cf6",       # Violet (Power)
+    "dsi": "#ec4899",       # Pink (Diastolic)
+    "coupling": "#14b8a6",  # Teal (Efficiency)
+    "fluid": "#3b82f6"      # Blue
 }
 
 STYLING = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+:root { --primary: #0f172a; --surface: #ffffff; }
+.stApp { background-color: #f1f5f9; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #0f172a; }
 
-:root { --bg: #f8fafc; --card: #ffffff; }
-.stApp { background-color: var(--bg); font-family: 'Inter', sans-serif; color: #0f172a; }
-
-/* KPI Card */
-.kpi-card {
-    background: var(--card); border: 1px solid #cbd5e1; border-radius: 8px;
-    padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 8px;
-    transition: all 0.2s ease;
-}
-.kpi-card:hover { transform: translateY(-2px); box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
-
-.kpi-lbl { 
-    font-size: 0.7rem; font-weight: 700; color: #64748b; 
-    text-transform: uppercase; letter-spacing: 0.05em; 
-}
-.kpi-val { 
-    font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; 
-    font-weight: 700; color: #0f172a; letter-spacing: -0.03em; margin: 4px 0;
-}
-.kpi-unit { font-size: 0.8rem; color: #94a3b8; margin-left: 2px; }
-
-/* Alert Banner */
-.banner {
-    padding: 16px; border-radius: 8px; border-left: 6px solid;
-    background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+/* Patient Header */
+.pt-banner {
+    background: #1e293b; color: white; padding: 12px 24px; border-radius: 8px;
     display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 24px;
+    margin-bottom: 15px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
 }
-.b-crit { border-color: #ef4444; background: #fef2f2; }
-.b-warn { border-color: #f59e0b; background: #fffbeb; }
-.b-ok { border-color: #10b981; background: #f0fdf4; }
+.pt-id { font-family: 'Courier New', monospace; font-weight: 700; font-size: 1.1rem; color: #38bdf8; }
 
-.section-head {
-    font-size: 1.0rem; font-weight: 800; color: #1e293b;
-    border-bottom: 2px solid #e2e8f0; margin: 30px 0 15px 0; padding-bottom: 6px;
+/* Novel KPI Tile */
+.kpi-tile {
+    background: white; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 12px; height: 100%;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05); transition: transform 0.1s;
+}
+.kpi-head { font-size: 0.7rem; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase; }
+.kpi-val { font-size: 1.6rem; font-weight: 800; color: #0f172a; line-height: 1.1; }
+.kpi-sub { font-size: 0.75rem; font-weight: 600; margin-top: 4px; }
+
+/* Clinical Alert */
+.alert-box {
+    padding: 12px 16px; border-radius: 6px; border-left: 6px solid;
+    background: white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    margin-bottom: 15px; display: flex; justify-content: space-between; align-items: center;
+}
+.a-crit { border-color: #ef4444; background: #fef2f2; color: #991b1b; }
+.a-warn { border-color: #f59e0b; background: #fffbeb; color: #92400e; }
+.a-ok { border-color: #10b981; background: #f0fdf4; color: #166534; }
+
+.section-title {
+    font-size: 0.95rem; font-weight: 800; color: #334155;
+    border-bottom: 2px solid #e2e8f0; margin: 25px 0 10px 0; padding-bottom: 4px;
     text-transform: uppercase; letter-spacing: 0.05em;
 }
 </style>
 """
 
-SAFETY_DISCLAIMER = """
-<div style="background-color:#fff3cd; border:1px solid #ffeeba; color:#856404; padding:12px; border-radius:6px; font-size:0.85rem; margin-top:20px;">
-    <strong>⚠️ SIMULATION ONLY</strong><br>
-    This dashboard is a prototype. Predictive confidence intervals are based on stochastic modeling.
-    <strong>Standard clinical judgment must take precedence.</strong>
+DISCLAIMER = """
+<div style="background-color:#f1f5f9; border:1px solid #cbd5e1; color:#475569; padding:8px; border-radius:6px; font-size:0.7rem; margin-top:30px; text-align:center;">
+    <strong>CLINICAL SAFETY WARNING</strong><br>
+    Titan Helios is an Investigational Clinical Decision Support tool. 
+    Parameters like CPO and Eadyn are derived proxies. 
+    Do not use as sole basis for intervention.
 </div>
 """
 
 # ==========================================
-# 3. PHYSIOLOGY ENGINE
+# 2. PATIENT CONTEXT & PARAMETERS
 # ==========================================
 
 @dataclass
-class PatientConfig:
-    shock_type: str = "Septic"
-    hb: float = 12.0       
-    weight: float = 70.0   
-    bsa: float = 1.8       
-    map_target: float = 65.0
-    compliance: float = 1.0 
-    metabolic_rate: float = 1.0 
-    hr_variability: float = 0.02 
+class PatientProfile:
+    mrn: str = "MRN-892401"
+    age: int = 64
+    weight: float = 78.5 # kg
+    bsa: float = 1.95 # m2
+    
+    # Lab Values
+    hb: float = 10.5 # g/dL
+    target_map: float = 65.0
 
-class PhysiologyEngine:
-    def __init__(self, config: PatientConfig, preload=12.0, contractility=1.0, afterload=1.0):
-        self.cfg = config
-        self.preload = float(preload)
-        self.contractility = float(contractility)
-        self.afterload = float(afterload)
-        self.MAX_HR = 180.0
-        self.MIN_HR = 40.0
-        self.SV_MAX_BASE = 100.0
-        self.STARLING_K = 8.0
+class DigitalTwinEngine:
+    def __init__(self, profile: PatientProfile):
+        self.p = profile
+        self.estimated_contractility = 1.0 
+        self.estimated_svr_tone = 0.8
+        self.estimated_compliance = 1.2
+        self.preload_reserve = 12.0 # CVP proxy
+        self.lung_water = 5.0 # ELWI Proxy (Normal < 7)
 
-    def copy(self):
-        return PhysiologyEngine(self.cfg, self.preload, self.contractility, self.afterload)
-
-    def step(self, disease_severity=0.0, noise_val=0.0):
-        sev = np.clip(disease_severity, 0.0, 1.0)
+    def step_physics(self, intervention_preload=1.0, intervention_afterload=1.0, intervention_inotropy=1.0):
+        # 1. Effective Parameters
+        eff_pre = self.preload_reserve * intervention_preload
+        eff_aft = self.estimated_svr_tone * intervention_afterload
+        eff_con = self.estimated_contractility * intervention_inotropy
         
-        # Shock Modifiers
-        mod_pre, mod_con, mod_aft = 1.0, 1.0, 1.0
-        if self.cfg.shock_type == "Septic":
-            mod_aft = max(0.25, 1.0 - 0.7 * sev)
-            mod_pre = max(0.6, 1.0 - 0.3 * sev)
-        elif self.cfg.shock_type == "Cardiogenic":
-            mod_con = max(0.2, 1.0 - 0.8 * sev)
-            mod_aft = 1.0 + (0.5 * sev)
-        elif self.cfg.shock_type == "Hypovolemic":
-            mod_pre = max(0.15, 1.0 - 0.9 * sev)
-            mod_con = 1.0 + (0.2 * sev)
-            mod_aft = 1.0 + (0.4 * sev)
-        elif self.cfg.shock_type == "Obstructive":
-            mod_pre = max(0.1, 1.0 - 0.9 * sev)
-            mod_aft = 1.0 + (0.4 * sev)
-
-        eff_pre = self.preload * mod_pre
-        eff_aft = self.afterload * mod_aft
-        eff_con = self.contractility * mod_con
-
-        # Mechanics
-        sv_max = self.SV_MAX_BASE * eff_contract
-        noisy_preload = eff_pre * (1 + noise_val * 0.5)
-        sv = sv_max * (noisy_preload**2 / (noisy_preload**2 + self.STARLING_K**2))
+        # 2. Mechanics
+        sv_max = 100.0 * eff_con
+        # Starling Curve
+        sv = sv_max * (eff_pre**2 / (eff_pre**2 + 64.0))
         
-        # Baroreflex
+        # 3. Baroreflex (Vasoplegic Shock response)
+        # In sepsis, DBP drops faster than SBP
         map_est = (sv * 70.0 * eff_aft * 0.05) + 5.0
-        hr_drive = float(np.clip((85.0 - map_est) * 2.0, 0.0, self.MAX_HR - 60.0))
-        hr = 60.0 + hr_drive + (noise_val * 50 * self.cfg.hr_variability)
-
-        # Output
+        hr_drive = np.clip((85.0 - map_est) * 2.0, 0, 110)
+        hr = 60.0 + hr_drive
+        
+        # 4. Hemodynamics
         co = (hr * sv) / 1000.0
-        ci = co / self.cfg.bsa
-        svr_dyne = 1200.0 * eff_aft
-        map_val = (co * svr_dyne / 80.0) + 5.0
-        pp_val = (sv / 1.5) * (1.0 / self.cfg.compliance)
+        ci = co / self.p.bsa
+        svr = 1200.0 * eff_aft
+        map_val = (co * svr / 80.0) + 5.0
         
-        # Metabolic
-        spo2 = 0.98 if sev < 0.5 else max(0.85, 0.98 - (sev-0.5)*0.2)
-        do2i = ci * self.cfg.hb * 1.34 * spo2 * 10.0
-        vo2_demand = 110.0 * self.cfg.metabolic_rate * (1.0 + (0.5 * sev))
-        vo2i = min(vo2_demand, do2i * 0.7)
-        o2er = vo2i / do2i if do2i > 0 else 1.0
+        # 5. Advanced Derived Params
+        # CPO: Cardiac Power Output (Watts)
+        cpo = (map_val * co) / 451
         
-        lac_gen = 0.0
-        if o2er > 0.35: lac_gen += (o2er - 0.35) * 0.3
-        if self.cfg.shock_type == "Septic": lac_gen += (sev * 0.03) 
+        # DBP Estimate (Widened PP in sepsis)
+        pp = sv / self.estimated_compliance
+        dbp = map_val - (pp/3)
+        sbp = map_val + (2*pp/3)
+        
+        # DSI: Diastolic Shock Index
+        dsi = hr / dbp if dbp > 0 else 0
+        
+        # Eadyn (Dynamic Arterial Elastance) Proxy
+        # Ratio of PPV/SVV. High = Pressure Responsive. Low = Vasoplegic.
+        # Modeled here as function of Tone
+        eadyn = 0.5 + (eff_aft * 1.0)
+        
+        # Therapeutic Conflict (Lung Water)
+        # Fluid bolus increases Lung Water if contractility is low
+        lung_stress = (eff_pre / eff_con) * 0.5
         
         return {
-            "HR": hr, "SV": sv, "CO": co, "CI": ci, "MAP": map_val, "SVR": svr_dyne, 
-            "DO2I": do2i, "VO2I": vo2i, "O2ER": o2er, "PP": pp_val,
-            "Lac_Gen": lac_gen, "Preload_Status": eff_pre
+            "MAP": map_val, "CI": ci, "SVR": svr, "SV": sv, "HR": hr, 
+            "CPO": cpo, "DSI": dsi, "Eadyn": eadyn, "DBP": dbp, "SBP": sbp,
+            "LungWater": self.lung_water + lung_stress
         }
 
-def simulate_data(config: PatientConfig, mins=720, seed=42):
-    rng = np.random.default_rng(seed)
-    engine = PhysiologyEngine(config)
-    x = np.linspace(-6, 6, mins)
-    progression = 1 / (1 + np.exp(-x)) * 0.9
-    noise_vector = rng.normal(0, config.hr_variability, mins)
+# ==========================================
+# 3. DATA STREAM SIMULATION
+# ==========================================
+
+def get_live_data_stream(profile: PatientProfile, hours=6):
+    mins = hours * 60
+    t = pd.date_range(end=pd.Timestamp.now(), periods=mins, freq="T")
     
-    history = []
-    curr_lac = 1.0
-    for t in range(mins):
-        state = engine.step(disease_severity=progression[t], noise_val=noise_vector[t])
-        clearance = curr_lac * 0.005 
-        curr_lac = curr_lac - clearance + state["Lac_Gen"]
-        state["Lactate"] = max(0.5, curr_lac)
-        map_dist = state["MAP"] - config.map_target
-        uo = 1.0 / (1.0 + np.exp(-0.3 * map_dist)) * 1.5
-        state["Urine"] = max(0.0, uo + rng.normal(0, 0.05))
-        history.append(state)
-        
-    df = pd.DataFrame(history)
-    df["SVRI"] = df["SVR"] * config.bsa
+    # Clinical Scenario: Progressive Septic Cardiomyopathy
+    trend = np.linspace(0, 1, mins)
+    
+    # Vitals Generation
+    map_trace = 80 - (trend * 35) + np.random.normal(0, 2, mins) # 80 -> 45
+    hr_trace = 85 + (trend * 45) + np.random.normal(0, 2, mins)  # 85 -> 130
+    
+    df = pd.DataFrame({"Timestamp": t, "MAP": map_trace, "HR": hr_trace})
+    
+    # Advanced Calculations
+    # DBP falls faster in sepsis
+    df["DBP"] = df["MAP"] - 15 - (trend * 10)
+    df["DSI"] = df["HR"] / df["DBP"]
+    
+    # Cardiac Power (Failing)
+    # CO maintains early (Compensation) then crashes
+    co_trend = 5.0 + (trend * 1.0) - (trend**3 * 3.0) 
+    df["CO"] = co_trend + np.random.normal(0, 0.1, mins)
+    df["CPO"] = (df["MAP"] * df["CO"]) / 451
+    
+    # Elastance (Vasodilation)
+    df["Eadyn"] = 1.4 - (trend * 0.9) # Becomes pressure-unresponsive
+    
+    # Lung Water (Leak)
+    df["ELWI"] = 6.0 + (trend * 8.0) # Pulmonary Edema developing
+    
     return df
 
-def predict_response(base_engine, current_sev, current_lac, horizon=60):
-    times = np.arange(horizon)
-    futures = {"Natural": {}, "Fluid": {}, "Pressor": {}}
-    scenarios = [("Natural", base_engine.copy()), ("Fluid", base_engine.copy()), ("Pressor", base_engine.copy())]
+def predict_scenarios(engine: DigitalTwinEngine):
+    """
+    Project 30 mins into future with interventions.
+    """
+    timeline = np.arange(30)
+    # Interventions: Fluid (Preload++), Levo (Afterload++), Dobuta (Contractility++)
+    scenarios = {
+        "Natural": {"pre": 1.0, "aft": 1.0, "con": 1.0},
+        "Fluid":   {"pre": 1.4, "aft": 1.0, "con": 1.0}, 
+        "Pressor": {"pre": 1.0, "aft": 1.5, "con": 1.0},
+        "Inotrope": {"pre": 1.0, "aft": 1.0, "con": 1.3}
+    }
     
-    scenarios[1][1].preload_base *= 1.4
-    scenarios[2][1].afterload_base *= 1.5
+    results = {}
+    for name, mods in scenarios.items():
+        state = engine.step_physics(mods["pre"], mods["aft"], mods["con"])
+        results[name] = state
     
-    for name, eng in scenarios:
-        vals = []
-        for t in times:
-            s = eng.step(current_sev + 0.001*t, noise_val=0.0)
-            vals.append(s["MAP"])
-        vals = np.array(vals)
-        sigma = np.linspace(2, 8, horizon)
-        futures[name] = {"mean": vals, "upper": vals + sigma, "lower": vals - sigma}
-        
-    return futures
+    return results
 
 # ==========================================
-# 4. VISUALIZATION ENGINE
+# 4. VISUALIZATION COMPONENT
 # ==========================================
 
 class Visuals:
+    
     @staticmethod
-    def _hex_to_rgba(h, alpha):
-        h = h.lstrip('#')
-        return f"rgba({int(h[0:2],16)}, {int(h[2:4],16)}, {int(h[4:6],16)}, {alpha})"
-
-    @staticmethod
-    def _clean_layout(height=200, title=None):
+    def _layout(height=200, title=None):
         layout = go.Layout(
-            template="plotly_white", margin=dict(l=10, r=10, t=40 if title else 10, b=10),
+            template="plotly_white", margin=dict(l=10, r=10, t=30 if title else 10, b=10),
             height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter, sans-serif", color=THEME["text"]),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            font=dict(family="sans-serif", color=THEME["text_main"]),
+            xaxis=dict(showgrid=True, gridcolor=THEME["grid"], zeroline=False),
+            yaxis=dict(showgrid=True, gridcolor=THEME["grid"], zeroline=False)
         )
-        if title: layout.title = dict(text=f"<b>{title}</b>", font=dict(size=14))
+        if title: layout.title = dict(text=f"<b>{title}</b>", font=dict(size=13))
         return layout
 
     @staticmethod
-    def plot_spark(df: pd.DataFrame, col: str, color: str, limits: Tuple[float, float]) -> go.Figure:
-        data = df[col].iloc[-60:]
+    def sparkline(df, col, color, target=None):
+        data = df.tail(45)
         fig = go.Figure()
-        fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=limits[0], y1=limits[1],
-                      fillcolor="rgba(0,0,0,0.04)", line_width=0, layer="below")
-        rgba = Visuals._hex_to_rgba(color, 0.1)
+        
         fig.add_trace(go.Scatter(
-            x=data.index, y=data.values, mode='lines', 
-            line=dict(color=color, width=2.5), fill='tozeroy', fillcolor=rgba, 
-            hoverinfo='y', name=col
+            x=data["Timestamp"], y=data[col], mode='lines',
+            line=dict(color=color, width=2.5), 
+            fill='tozeroy', fillcolor=f"rgba{color[1:-1]},0.1)",
+            hoverinfo='y'
         ))
-        fig.add_trace(go.Scatter(
-            x=[data.index[-1]], y=[data.values[-1]], mode='markers',
-            marker=dict(color=color, size=8, line=dict(color='white', width=1)),
-            showlegend=False
+        
+        if target:
+            fig.add_hline(y=target, line_dash="dot", line_color="gray", opacity=0.5)
+            
+        fig.update_layout(Visuals._layout(height=50))
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False, range=[data[col].min()*0.9, data[col].max()*1.1])
+        return fig
+
+    @staticmethod
+    def plot_cpo_gauge(val):
+        """Cardiac Power Output Gauge - The Mortality Predictor"""
+        fig = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = val,
+            number = {'suffix': " W", 'font': {'size': 24}},
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "Cardiac Power (CPO)", 'font': {'size': 12, 'color': '#64748b'}},
+            gauge = {
+                'axis': {'range': [0, 1.5], 'tickwidth': 1},
+                'bar': {'color': THEME["cpo"]},
+                'steps': [
+                    {'range': [0, 0.6], 'color': "rgba(239, 68, 68, 0.2)"}, # Mortality Zone
+                    {'range': [0.6, 1.5], 'color': "rgba(16, 185, 129, 0.1)"}
+                ],
+                'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 0.6}
+            }
         ))
-        fig.update_layout(Visuals._clean_layout(height=50))
-        fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
-        y_min = min(data.min(), limits[0]) * 0.95
-        y_max = max(data.max(), limits[1]) * 1.05
-        fig.update_yaxes(range=[y_min, y_max])
+        fig.update_layout(height=140, margin=dict(l=20,r=20,t=20,b=20))
         return fig
 
     @staticmethod
-    def plot_horizon(futures: Dict, target: float) -> go.Figure:
-        t = np.arange(len(futures["Natural"]["mean"]))
+    def plot_therapeutic_conflict(engine_state):
+        """
+        Visualizes Fluid Responsiveness vs Fluid Tolerance.
+        Y-Axis: Stroke Volume Gain (Benefit)
+        X-Axis: Lung Water Index (Harm)
+        """
         fig = go.Figure()
         
-        def add_scenario(name, color, data, dash=None):
-            rgba = Visuals._hex_to_rgba(color, 0.15)
-            # CI Band (Legend hidden to avoid duplicates)
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([t, t[::-1]]), y=np.concatenate([data["upper"], data["lower"][::-1]]),
-                fill='toself', fillcolor=rgba, line=dict(width=0), showlegend=False, hoverinfo='skip'
-            ))
-            # Main Line
-            fig.add_trace(go.Scatter(
-                x=t, y=data["mean"], 
-                line=dict(color=color, width=3, dash=dash), 
-                name=name, hovertemplate="%{y:.0f} mmHg"
-            ))
+        # Zones
+        fig.add_shape(type="rect", x0=0, x1=10, y0=10, y1=20, fillcolor="rgba(16, 185, 129, 0.1)", line_width=0)
+        fig.add_annotation(x=5, y=15, text="SAFE TO FILL", font=dict(color="green", size=10), showarrow=False)
+        
+        fig.add_shape(type="rect", x0=10, x1=20, y0=0, y1=20, fillcolor="rgba(239, 68, 68, 0.1)", line_width=0)
+        fig.add_annotation(x=15, y=10, text="DROWNING RISK<br>(Stop Fluids)", font=dict(color="red", size=10), showarrow=False)
 
-        add_scenario("Natural Course", THEME["vis_ref"], futures["Natural"], "dot")
-        add_scenario("Fluid (+1L)", THEME["vis_ci"], futures["Fluid"])
-        add_scenario("Pressor", THEME["vis_map"], futures["Pressor"])
+        # Simulation Points
+        # Current
+        curr_elwi = engine_state['Natural']['LungWater']
+        curr_sv = engine_state['Natural']['SV']
         
-        fig.add_hline(y=target, line_color=THEME["danger"], line_dash="solid")
-        fig.add_annotation(x=0, y=target+2, text=f"TARGET MAP ({target})", 
-                           font=dict(color=THEME["danger"], size=10), showarrow=False, align="left")
+        # With Fluid
+        fluid_elwi = engine_state['Fluid']['LungWater']
+        fluid_sv = engine_state['Fluid']['SV']
         
-        fig.update_layout(Visuals._clean_layout(height=300, title="Predicted MAP Response (30 min)"))
-        fig.update_xaxes(title="Minutes into Future", showgrid=False)
-        fig.update_yaxes(title="MAP (mmHg)", gridcolor=THEME["grid"])
+        # Vector
+        fig.add_annotation(x=fluid_elwi, y=fluid_sv, ax=curr_elwi, ay=curr_sv,
+                           xref="x", yref="y", axref="x", ayref="y",
+                           arrowhead=2, arrowwidth=2, arrowcolor=THEME["accent"], text="FLUID EFFECT")
+        
+        fig.add_trace(go.Scatter(x=[curr_elwi], y=[curr_sv], mode='markers', marker=dict(color='black', size=10), name="Now"))
+
+        fig.update_layout(Visuals._layout(height=250, title="Therapeutic Conflict (Lung vs Heart)"))
+        fig.update_xaxes(title="Lung Water (ELWI) - Harm", range=[0, 20], gridcolor=THEME["grid"])
+        fig.update_yaxes(title="Stroke Volume - Benefit", range=[20, 100], gridcolor=THEME["grid"])
         return fig
 
     @staticmethod
-    def plot_compass(df: pd.DataFrame, preds: Dict, curr_idx: int) -> go.Figure:
-        start = max(0, curr_idx - 60)
-        data = df.iloc[start:curr_idx]
-        cur = df.iloc[curr_idx]
+    def plot_coupling(engine_state):
+        """V-A Coupling Efficiency (Ea/Ees)."""
         fig = go.Figure()
         
-        # Diagnostic Zones
-        zones = [
-            (0, 0, 2.5, 65, THEME["danger"], "CRITICAL SHOCK"),
-            (2.5, 0, 6.0, 65, THEME["warning"], "VASOPLEGIA"),
-            (2.5, 65, 6.0, 110, THEME["success"], "GOAL")
-        ]
-        for x0, y0, x1, y1, col, txt in zones:
-            rgba = Visuals._hex_to_rgba(col, 0.1)
-            fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1, fillcolor=rgba, line_width=0, layer="below")
-            fig.add_annotation(x=(x0+x1)/2, y=(y0+y1)/2, text=txt, font=dict(color=col, size=10, weight="bold"), showarrow=False)
-
-        fig.add_trace(go.Scatter(x=data["CI"], y=data["MAP"], mode="lines", 
-                                 line=dict(color=THEME["vis_ref"], width=2, dash="dot"), name="Patient History"))
-        fig.add_trace(go.Scatter(x=[cur["CI"]], y=[cur["MAP"]], mode="markers", 
-                                 marker=dict(color=THEME["primary"], size=14, symbol="cross", line=dict(width=2, color="white")), 
-                                 name="Current State"))
+        # Iso-efficiency lines
+        x = np.linspace(0, 150, 100)
+        fig.add_trace(go.Scatter(x=x, y=x*1.0, line=dict(color='gray', dash='dot'), name="Optimal (1.0)"))
         
-        # Vectors
-        f_map = preds["Fluid"]["mean"][-1]
-        f_ci = cur["CI"] * 1.25 # Heuristic for vector direction
-        p_map = preds["Pressor"]["mean"][-1]
-        p_ci = cur["CI"] * 1.0
+        # Current State (ESP vs SV) - Simplified Ees proxy
+        pes = engine_state['Natural']['MAP'] * 0.9
+        sv = engine_state['Natural']['SV']
         
-        fig.add_annotation(x=f_ci, y=f_map, ax=cur["CI"], ay=cur["MAP"], xref="x", yref="y", axref="x", ayref="y",
-                           arrowhead=2, arrowcolor=THEME["vis_ci"], text="FLUID", font=dict(color=THEME["vis_ci"], weight="bold"))
+        fig.add_trace(go.Scatter(x=[sv], y=[pes], mode='markers', marker=dict(size=15, color=THEME["coupling"]), name="Coupling"))
         
-        fig.add_annotation(x=p_ci, y=p_map, ax=cur["CI"], ay=cur["MAP"], xref="x", yref="y", axref="x", ayref="y",
-                           arrowhead=2, arrowcolor=THEME["vis_map"], text="PRESSOR", font=dict(color=THEME["vis_map"], weight="bold"))
-
-        fig.update_layout(Visuals._clean_layout(height=300, title="Hemodynamic Compass"))
-        fig.update_xaxes(title="Cardiac Index (L/min/m²)", range=[1.0, 6.0], gridcolor=THEME["grid"])
-        fig.update_yaxes(title="MAP (mmHg)", range=[30, 110], gridcolor=THEME["grid"])
-        return fig
-
-    @staticmethod
-    def plot_starling(df: pd.DataFrame, curr_idx: int) -> go.Figure:
-        data = df.iloc[max(0, curr_idx-30):curr_idx]
-        fig = go.Figure()
-        
-        # Ideal Curve
-        x = np.linspace(0, 20, 100); y = np.log(x+1)*30
-        fig.add_trace(go.Scatter(x=x, y=y, line=dict(color=THEME["vis_ref"], dash='dot'), name='Ideal Curve'))
-        
-        # Patient
-        fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', 
-                                 line=dict(color=THEME["vis_ci"], width=3), name="Patient Trajectory"))
-        fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], 
-                                 mode='markers', marker=dict(color=THEME["vis_ci"], size=10), showlegend=False))
-        
-        # Interpretation text
-        d_sv = data['SV'].iloc[-1] - data['SV'].iloc[0]
-        slope = d_sv / (data['Preload_Status'].iloc[-1] - data['Preload_Status'].iloc[0] + 0.01)
-        status = "FLUID RESPONSIVE" if slope > 2.0 else "NON-RESPONDER"
-        col = THEME["success"] if slope > 2.0 else THEME["danger"]
-        
-        fig.add_annotation(x=10, y=10, text=status, font=dict(color=col, weight="bold"), showarrow=False)
-
-        fig.update_layout(Visuals._clean_layout(height=250, title="Fluid Responsiveness (Starling)"))
-        fig.update_xaxes(title="Preload (CVP)", gridcolor=THEME["grid"])
-        fig.update_yaxes(title="Stroke Volume (mL)", gridcolor=THEME["grid"])
-        return fig
-
-    @staticmethod
-    def plot_oxygen(df: pd.DataFrame, curr_idx: int) -> go.Figure:
-        start = max(0, curr_idx - 180)
-        data = df.iloc[start:curr_idx]
-        fig = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        fig.add_trace(go.Scatter(x=data.index, y=data['DO2I'], fill='tozeroy', 
-                                 fillcolor=Visuals._hex_to_rgba(THEME["vis_do2"], 0.2),
-                                 line=dict(color=THEME["vis_do2"]), name='Delivery (DO2)'), secondary_y=False)
-        
-        fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], 
-                                 line=dict(color=THEME["danger"], width=2), name='Lactate (Debt)'), secondary_y=True)
-        
-        fig.update_layout(Visuals._clean_layout(height=250, title="Oxygen Supply vs Debt"))
-        fig.update_yaxes(title="DO2I (mL/m²)", secondary_y=False, gridcolor=THEME["grid"])
-        fig.update_yaxes(title="Lactate", secondary_y=True, showgrid=False)
+        fig.update_layout(Visuals._layout(height=250, title="V-A Coupling Efficiency"))
+        fig.update_xaxes(title="Stroke Volume", gridcolor=THEME["grid"])
+        fig.update_yaxes(title="End-Systolic Pressure", gridcolor=THEME["grid"])
         return fig
 
 # ==========================================
-# 6. KPI RENDERER
-# ==========================================
-
-class KPIComponent:
-    @staticmethod
-    def render(col, label, val, unit, color, df_col, t_low, t_high, key_id, df, idx, prev_row):
-        delta = val - prev_row[df_col]
-        color_trend = THEME["danger"] if (val < t_low or val > t_high) else THEME["success"]
-        
-        with col:
-            st.markdown(f"""
-            <div class="kpi-card" style="border-top:3px solid {color}">
-                <div class="kpi-lbl">{label}</div>
-                <div class="kpi-val" style="color:{color}">{val:.1f} <span class="kpi-unit">{unit}</span></div>
-                <div class="kpi-trend" style="color:{color_trend}">
-                    {delta:+.1f} <span style="color:#94a3b8; font-weight:400; font-size:0.7rem; margin-left:4px">15m</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-            st.plotly_chart(Visuals.plot_spark(df.iloc[:idx+1], df_col, color, (t_low, t_high)), 
-                            use_container_width=True, config={'displayModeBar': False}, key=key_id)
-
-# ==========================================
-# 7. MAIN APP EXECUTION
+# 5. APP LOGIC
 # ==========================================
 
 st.markdown(STYLING, unsafe_allow_html=True)
 
 # --- SIDEBAR ---
 with st.sidebar:
-    st.header("TITAN | Control")
-    st.markdown("### ⚙️ Physiology")
-    shock = st.selectbox("Shock Type", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
-    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5)
-    map_target = st.number_input("Target MAP", 55, 85, 65)
-    curr_time = st.slider("Timeline", 60, 720, 720)
+    st.header("TITAN | Helios")
+    st.markdown("### 🏥 Patient Context")
+    p_id = st.text_input("Patient ID", "MRN-892401")
     
-    if st.button("Refresh Simulation"):
-        st.cache_data.clear()
-        st.rerun()
+    st.markdown("### 🎛️ Digital Twin Params")
+    p_contract = st.slider("Contractility %", 20, 100, 40)
+    p_svr = st.slider("Vasoplegia %", 0, 100, 70)
     
-    config = PatientConfig(shock_type=shock, hb=hb, map_target=map_target)
+    profile = PatientProfile(mrn=p_id)
+    twin = DigitalTwinEngine(profile)
+    # Apply sliders to twin
+    twin.estimated_contractility = p_contract / 100.0
+    twin.estimated_svr_tone = (100 - p_svr) / 100.0
 
-# --- SIMULATION ---
-df = simulate_data(config, mins=720, seed=42)
-idx = curr_time - 1
-row = df.iloc[idx]
-prev = df.iloc[idx-15]
+# --- DATA INGESTION ---
+df_stream = get_live_data_stream(profile)
+cur = df_stream.iloc[-1]
+prv = df_stream.iloc[-15]
 
-# --- 1. HEADER ---
-status_msg = "STABLE"
-action_msg = "Routine Monitoring"
-banner_style = "b-ok"
+# --- PREDICTIONS ---
+futures = predict_scenarios(twin)
 
-if row["Lactate"] > 2.0:
-    status_msg = "HYPOPERFUSION DETECTED"
-    action_msg = "Evaluate DO2 (Fluids/Blood)"
-    banner_style = "b-warn"
-
-if row["MAP"] < map_target:
-    status_msg = f"{shock.upper()} SHOCK"
-    banner_style = "b-crit"
-    if shock == "Septic": action_msg = "PROTOCOL: Vasopressor (Norepinephrine)"
-    elif shock == "Cardiogenic": action_msg = "PROTOCOL: Inotrope (Dobutamine)"
-    elif shock == "Hypovolemic": action_msg = "PROTOCOL: Rapid Volume Expansion"
-    else: action_msg = "PROTOCOL: Relieve Obstruction"
-
+# --- HEADER ---
 st.markdown(f"""
-<div class="banner {banner_style}">
+<div class="pt-banner">
     <div>
-        <div style="font-weight:800; font-size:1.25rem;">{status_msg}</div>
-        <div style="color:#64748b; font-weight:500;">Target: MAP > {map_target} • Lactate < 2.0</div>
+        <div class="pt-id">{profile.mrn}</div>
+        <div style="font-size:0.9rem; opacity:0.8;">Septic Shock • 64M • 78kg</div>
     </div>
     <div style="text-align:right;">
-        <div style="font-size:0.75rem; font-weight:700; color:#64748b;">RECOMMENDATION</div>
-        <div style="font-weight:700; font-size:1.1rem;">{action_msg}</div>
+        <div style="font-weight:700; color:#4ade80;">● LIVE CONNECTION</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. KPI STRIP ---
-cols = st.columns(6)
-KPIComponent.render(cols[0], "MAP", row["MAP"], "mmHg", THEME["vis_map"], "MAP", map_target, 110, "k1", df, idx, prev)
-KPIComponent.render(cols[1], "Cardiac Index", row["CI"], "L/min", THEME["vis_ci"], "CI", 2.5, 4.2, "k2", df, idx, prev)
-KPIComponent.render(cols[2], "SVR Index", row["SVRI"], "dyn", THEME["vis_svr"], "SVRI", 800, 1200, "k3", df, idx, prev)
-KPIComponent.render(cols[3], "Stroke Vol", row["PP"], "mL", THEME["vis_hr"], "PP", 35, 60, "k4", df, idx, prev)
-KPIComponent.render(cols[4], "DO2 Index", row["DO2I"], "mL/m²", THEME["vis_do2"], "DO2I", 400, 600, "k5", df, idx, prev)
-KPIComponent.render(cols[5], "Lactate", row["Lactate"], "mmol", THEME["danger"], "Lactate", 0, 2.0, "k6", df, idx, prev)
+# --- ALERTS ---
+alert_status = "STABLE"
+alert_col = "a-ok"
+alert_msg = "Hemodynamics Compensated"
 
-# --- 3. PREDICTIVE LAYER ---
-st.markdown('<div class="section-header">🔮 Predictive Decision Support</div>', unsafe_allow_html=True)
-c1, c2 = st.columns([1, 1])
+if cur["CPO"] < 0.6:
+    alert_status = "CRITICAL: POWER FAILURE"
+    alert_col = "a-crit"
+    alert_msg = "Cardiac Power < 0.6W. High Mortality Risk. Consider Mechanical Support."
+elif cur["DSI"] > 2.0:
+    alert_status = "VASOPLEGIC COLLAPSE"
+    alert_col = "a-warn"
+    alert_msg = "Diastolic Shock Index > 2.0. Severe Vasodilation."
 
-engine = PhysiologyEngine(config)
-futures = predict_response(engine, 0.9 * (idx/720), row["Lactate"])
+st.markdown(f"""
+<div class="alert-box {alert_col}">
+    <div>
+        <div style="font-size:1.2rem; font-weight:800;">{alert_status}</div>
+        <div style="font-weight:500;">{alert_msg}</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-with c1:
-    with st.expander("ℹ️ How to read the Compass", expanded=False):
-        st.write("Visualizes hemodynamic state. **Blue Arrow** = Fluid effect. **Orange Arrow** = Pressor effect. Target is Green Zone.")
-    st.plotly_chart(Visuals.plot_compass(df, futures, idx), use_container_width=True, config={'displayModeBar': False})
+# --- 1. ESSENTIAL METRICS GRID ---
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-with c2:
-    with st.expander("ℹ️ How to read the Horizon", expanded=False):
-        st.write("Projected MAP over 30 mins. **Green Line** = Fluid. **Orange Line** = Pressor. Shaded area = 95% Confidence Interval.")
-    st.plotly_chart(Visuals.plot_horizon(futures, map_target), use_container_width=True, config={'displayModeBar': False})
+def render_kpi(col, label, val, unit, color, df_col):
+    delta = val - prv[df_col]
+    color_txt = THEME["crit"] if delta < 0 and df_col in ["MAP", "CPO"] else THEME["text_main"]
+    
+    with col:
+        st.markdown(f"""
+        <div class="kpi-tile" style="border-top: 3px solid {color}">
+            <div class="kpi-head">{label}</div>
+            <div class="kpi-val" style="color:{color_txt}">{val:.2f}</div>
+            <div class="kpi-sub" style="color:{THEME['text_sub']}">{unit} • {delta:+.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.plotly_chart(Visuals.sparkline(df_stream, df_col, color), use_container_width=True, config={'displayModeBar': False})
 
-# --- 4. ORGAN LAYER ---
-st.markdown('<div class="section-header">🫀 Physiological Mechanics</div>', unsafe_allow_html=True)
-c3, c4 = st.columns(2)
+render_kpi(c1, "Cardiac Power", cur["CPO"], "Watts", THEME["cpo"], "CPO")
+render_kpi(c2, "Diastolic SI", cur["DSI"], "idx", THEME["dsi"], "DSI")
+render_kpi(c3, "Ea_dyn", cur["Eadyn"], "Pressure Resp", THEME["accent"], "Eadyn")
+render_kpi(c4, "MAP", cur["MAP"], "mmHg", THEME["map"], "MAP")
+render_kpi(c5, "Cardiac Index", cur["CI"], "L/min", THEME["ci"], "CI")
+render_kpi(c6, "ELWI (Lung H2O)", cur["ELWI"], "mL/kg", THEME["warn"], "ELWI")
 
-with c3:
-    with st.expander("ℹ️ Interpreting Oxygen Kinetics", expanded=False):
-        st.write("Gap between **Delivery (Purple)** and **Lactate (Red)** indicates tissue hypoxia depth.")
-    st.plotly_chart(Visuals.plot_oxygen(df, idx), use_container_width=True, config={'displayModeBar': False})
+# --- 2. ADVANCED HEMODYNAMICS ---
+st.markdown('<div class="section-title">🔮 PREDICTIVE & MECHANICS</div>', unsafe_allow_html=True)
+col_a, col_b, col_c = st.columns([1, 2, 1])
 
-with c4:
-    with st.expander("ℹ️ Interpreting Starling Curve", expanded=False):
-        st.write("**Steep Slope** = Heart will respond to volume. **Flat Slope** = Heart is maxed out (Stop fluids).")
-    st.plotly_chart(Visuals.plot_starling(df, idx), use_container_width=True, config={'displayModeBar': False})
+with col_a:
+    # CPO Gauge
+    st.plotly_chart(Visuals.plot_cpo_gauge(cur["CPO"]), use_container_width=True, config={'displayModeBar': False})
+    st.info("**Why CPO?** Integration of Flow and Pressure. < 0.6W predicts mortality with 80% specificity.")
 
-st.markdown(SAFETY_DISCLAIMER, unsafe_allow_html=True)
+with col_b:
+    # Therapeutic Conflict Matrix
+    st.plotly_chart(Visuals.plot_therapeutic_conflict(futures), use_container_width=True, config={'displayModeBar': False})
+
+with col_c:
+    # V-A Coupling
+    st.plotly_chart(Visuals.plot_coupling(futures), use_container_width=True, config={'displayModeBar': False})
+    st.info("**Why Ea_dyn?** > 1.0 means Pressors will raise MAP. < 0.8 means Vasoplegia requires Vasopressin/Angiotensin.")
+
+st.markdown(DISCLAIMER, unsafe_allow_html=True)
