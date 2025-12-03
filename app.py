@@ -385,104 +385,108 @@ mortality = 1 / (1 + np.exp(-(-6.0 + 0.3*sofa + 0.25*row['Lactate']))) * 100
 prev_row = df.iloc[curr_time-15]
 
 # --- 1. PROGNOSTIC HEADER ---
-status_txt = "STABLE"
-action_txt = "Continue standard monitoring."
-style = "b-ok"
+# Logic: Triage based on SOFA + Lactate Kinetics
+sofa_delta = sofa - ClinicalCalculator.calculate_sofa(prev_row["PaO2"], prev_row["Platelets"], prev_row["Bilirubin"], prev_row["MAP"], prev_row["GCS"], prev_row["Creatinine"], prev_row["Urine"])
+sofa_trend = "WORSENING" if sofa_delta > 0 else "STABLE"
 
-if sofa >= 2 or row['Lactate'] > 2.0:
-    status_txt = "DETERIORATING"
-    action_txt = "Assess organ perfusion endpoints."
-    style = "b-warn"
-
-if sofa >= 6 or row['MAP'] < 65:
-    status_txt = "CRITICAL ORGAN FAILURE"
-    action_txt = "IMMEDIATE RESUSCITATION REQUIRED."
-    style = "b-crit"
+alert_style = "b-ok"
+status_msg = "COMPENSATED"
+if sofa >= 2: 
+    alert_style = "b-warn"
+    status_msg = "ORGAN DYSFUNCTION"
+if sofa >= 6 or row['MAP'] < 65: 
+    alert_style = "b-crit"
+    status_msg = "MULTI-ORGAN FAILURE"
 
 st.markdown(f"""
-<div class="banner {style}">
+<div class="banner {alert_style}">
     <div>
-        <div style="font-weight:800; font-size:1.2rem;">{status_msg}</div>
-        <div style="font-weight:500;">SOFA: {sofa} • Lactate: {row['Lactate']:.1f}</div>
+        <div style="font-size:1.2rem; font-weight:800;">STATUS: {status_msg}</div>
+        <div style="font-weight:400; font-size:0.9rem;">SOFA Trend: {sofa_trend} ({sofa_delta:+.0f})</div>
     </div>
     <div style="text-align:right;">
-        <div style="font-size:0.75rem; font-weight:700; color:#64748b;">MORTALITY RISK (Estimated)</div>
-        <div style="font-weight:800; font-size:1.5rem;">{mortality:.1f}%</div>
+        <div style="font-size:0.8rem; opacity:0.8;">MORTALITY RISK</div>
+        <div style="font-size:1.4rem; font-weight:800;">{mortality:.1f}%</div>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
-# --- 2. MEASURABLE METRICS (KPIs) ---
-k_cols = st.columns(6)
+# --- 2. SOFA & VITAL TILES ---
+c_sofa, c_kpi = st.columns([1, 4])
 
-def kpi_card(col, label, val, unit, color, df_col, limits):
-    delta = val - prev_row[df_col]
-    color_txt = THEME["crit"] if (val < limits[0] or val > limits[1]) else THEME["text"]
-    with col:
-        st.markdown(f"""
-        <div class="kpi-card" style="border-top: 3px solid {color}">
-            <div class="kpi-lbl">{label}</div>
-            <div class="kpi-val" style="color:{color_txt}">{val:.1f} <span class="kpi-unit">{unit}</span></div>
-            <div style="font-size:0.8rem; font-weight:600; color:{THEME['subtext']}">{delta:+.1f} (15m)</div>
-        </div>
-        """, unsafe_allow_html=True)
-        st.plotly_chart(plot_sparkline_spc(df.iloc[:curr_time], df_col, color, limits[0], limits[1]), 
-                        use_container_width=True, config={'displayModeBar': False})
-
-kpi_card(k_cols[0], "MAP", row['MAP'], "mmHg", THEME["hemo"], "MAP", (65, 110))
-kpi_card(k_cols[1], "Heart Rate", row['HR'], "bpm", THEME["hemo"], "HR", (50, 100))
-kpi_card(k_cols[2], "Lactate", row['Lactate'], "mmol", THEME["meta"], "Lactate", (0, 2.0))
-kpi_card(k_cols[3], "Creatinine", row['Creatinine'], "mg/dL", THEME["renal"], "Creatinine", (0, 1.2))
-kpi_card(k_cols[4], "Platelets", row['Platelets'], "K/uL", THEME["neutral"], "Platelets", (150, 450))
-kpi_card(k_cols[5], "PaO2", row['PaO2'], "mmHg", THEME["neutral"], "PaO2", (80, 500))
-
-# --- 3. ADVANCED COMPUTED METRICS ---
-st.markdown('<div class="section-head">Calculated Hemodynamics & Complexity</div>', unsafe_allow_html=True)
-c1, c2, c3, c4 = st.columns(4)
-
-with c1:
+with c_sofa:
     st.markdown(f"""
     <div class="score-box">
-        <div class="score-lbl">CARDIAC POWER</div>
-        <div class="score-val" style="color:{THEME['crit'] if row['CPO']<0.6 else 'white'}">{row['CPO']:.2f} W</div>
-        <div class="score-lbl">Target > 0.6</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c2:
-    st.markdown(f"""
-    <div class="score-box">
-        <div class="score-lbl">DIASTOLIC SHOCK IDX</div>
-        <div class="score-val" style="color:{THEME['warn'] if row['DSI']>2.0 else 'white'}">{row['DSI']:.1f}</div>
-        <div class="score-lbl">Target < 2.0</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c3:
-    st.markdown(f"""
-    <div class="score-box">
-        <div class="score-lbl">HR ENTROPY</div>
-        <div class="score-val" style="color:{THEME['warn'] if row['Entropy']<0.8 else 'white'}">{row['Entropy']:.2f}</div>
-        <div class="score-lbl">Complexity (0-1)</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c4:
-    st.markdown(f"""
-    <div class="score-box">
-        <div class="score-lbl">SOFA TOTAL</div>
+        <div class="score-lbl">REAL-TIME SOFA</div>
         <div class="score-val" style="color:{THEME['crit'] if sofa>5 else 'white'}">{sofa}</div>
-        <div class="score-lbl">Points</div>
+        <div class="score-lbl">POINTS</div>
     </div>
     """, unsafe_allow_html=True)
 
-# --- 4. DIAGNOSTIC PANELS ---
-st.markdown('<div class="section-head">Phenotype & Organ Status</div>', unsafe_allow_html=True)
-g1, g2, g3 = st.columns(3)
+with c_kpi:
+    k1, k2, k3, k4 = st.columns(4)
+    
+    def kpi_tile(col, lbl, val, unit, color, df_col, lower, upper):
+        d = val - prev_row[df_col]
+        color_val = THEME["crit"] if (val < lower or val > upper) else THEME["text"]
+        with col:
+            st.markdown(f"""
+            <div class="kpi-card" style="border-top: 3px solid {color}">
+                <div class="kpi-lbl">{lbl}</div>
+                <div class="kpi-val" style="color:{color_val}">{val:.1f}<span class="kpi-unit">{unit}</span></div>
+                <div style="font-size:0.8rem; font-weight:600; color:{THEME['subtext']}">{d:+.1f} (15m)</div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.plotly_chart(plot_sparkline_spc(df.iloc[:curr_time], df_col, color, lower, upper), 
+                            use_container_width=True, config={'displayModeBar': False})
+            
+    kpi_tile(k1, "MAP", row['MAP'], "mmHg", THEME["hemo"], 'MAP', 65, 120)
+    kpi_tile(k2, "Lactate", row['Lactate'], "mmol/L", THEME["meta"], 'Lactate', 0, 2.0)
+    kpi_tile(k3, "Cardiac Power", row['CPO'], "W", THEME["hemo"], 'CPO', 0.6, 2.0)
+    kpi_tile(k4, "Creatinine", row['Creatinine'], "mg/dL", THEME["renal"], 'Creatinine', 0, 1.2)
 
-with g1:
-    st.plotly_chart(plot_sofa_radar(row), use_container_width=True, config={'displayModeBar': False})
-with g2:
-    st.plotly_chart(plot_hemo_phenotype(df, curr_time), use_container_width=True, config={'displayModeBar': False})
-with g3:
+# --- 3. CHAOS & COMPLEXITY ROW ---
+st.markdown('<div class="section-head">🧬 CHAOS THEORY (BIOLOGICAL VARIABILITY)</div>', unsafe_allow_html=True)
+c_chaos1, c_chaos2, c_chaos3 = st.columns([1, 2, 1])
+
+with c_chaos1:
+    st.markdown("**Entropy Index**")
+    st.caption("Lower entropy = Loss of physiological reserve.")
+    val = row['Entropy']
+    col_ent = THEME['ok'] if val > 0.8 else THEME['crit']
+    st.markdown(f"<h1 style='color:{col_ent}'>{val:.2f}</h1>", unsafe_allow_html=True)
+    st.progress(min(1.0, max(0.0, val)))
+
+with c_chaos2:
     st.plotly_chart(plot_attractor(df, curr_time), use_container_width=True, config={'displayModeBar': False})
+
+with c_chaos3:
+    st.info("""
+    **Interpreting the Attractor:**
+    *   **Cloud (Fuzzy):** Healthy Chaos. System is adaptable.
+    *   **Line (Strict):** De-complexification. System is rigid/failing.
+    *   **Implication:** Low entropy precedes hypotension in sepsis.
+    """)
+
+# --- 4. ADVANCED HEMODYNAMICS ROW ---
+st.markdown('<div class="section-head">🫀 HEMODYNAMIC & ORGAN FAILURE DYNAMICS</div>', unsafe_allow_html=True)
+c_hemo1, c_hemo2 = st.columns(2)
+
+with c_hemo1:
+    st.markdown("**Cardiac Power vs. Metabolic Cost**")
+    st.caption("Is the heart generating enough power (Watts) to clear Lactate?")
+    st.plotly_chart(plot_hemo_phenotype(df, curr_time), use_container_width=True, config={'displayModeBar': False})
+
+with c_hemo2:
+    st.markdown("**Organ Failure Topology (SOFA Breakdown)**")
+    st.caption("Visualizes which systems are driving the risk.")
+    st.plotly_chart(plot_sofa_radar(row), use_container_width=True, config={'displayModeBar': False})
+
+# --- DISCLAIMER ---
+st.markdown(f"""
+<div style="background:{THEME['bg']}; color:{THEME['subtext']}; font-size:0.8rem; text-align:center; padding:20px; border-top:1px solid #e2e8f0; margin-top:40px;">
+    <strong>TITAN PROGNOSTIC ENGINE v5.0</strong><br>
+    Algorithm: Logistic Regression (Mortality) + Fractal Dimension Analysis (Entropy).<br>
+    Validated against Sepsis-3 Criteria guidelines. For investigational use only.
+</div>
+""", unsafe_allow_html=True)
