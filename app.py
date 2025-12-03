@@ -8,7 +8,6 @@ from scipy.signal import welch
 from sklearn.cluster import KMeans
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler
-import time
 
 # ==========================================
 # 1. SYSTEM CONFIGURATION & MEDICAL THEME
@@ -321,7 +320,10 @@ def plot_counterfactual(df, drugs, profile):
 
 def plot_spectral_analysis(df):
     """Fourier Transform of HRV."""
-    f, Pxx = welch(df['HR'].iloc[-120:], fs=1/60) # 1 sample per min
+    # FIX: Convert Series slice to numpy array to avoid KeyError/tuple indexing issue in scipy
+    data = df['HR'].iloc[-120:].to_numpy()
+    
+    f, Pxx = welch(data, fs=1/60) # 1 sample per min
     fig = px.line(x=f, y=Pxx, title="HRV Spectral Density (Autonomic Tone)")
     fig.update_xaxes(title="Frequency (Hz)")
     fig.update_yaxes(title="Power")
@@ -445,7 +447,7 @@ metric_card(m6, "SpO2", cur['SpO2'], "%", cur['SpO2']-prev['SpO2'])
 # --- 4. ZONE C: RESPIRATORY & FLUID MODULE ---
 st.markdown('<div class="zone-header">ZONE C: RESPIRATORY & FLUID STATUS</div>', unsafe_allow_html=True)
 r1, r2, r3, r4 = st.columns(4)
-r1.metric("PaO2 / FiO2", f"{cur['PaO2']/cur['PaO2']*300:.0f}", "Est. Shunt") # Simplified placeholder
+r1.metric("PaO2 / FiO2", f"{cur['PaO2']/drug_dict['fio2']:.0f}", "Est. Shunt") 
 r2.metric("PaCO2 (Vent)", f"{cur['PaCO2']:.1f}", "mmHg")
 r3.metric("PPV (Fluid Resp)", f"{cur['PPV']:.1f}%", "Responsive" if cur['PPV']>12 else "Non-Resp", delta_color="normal")
 r4.metric("Shock Index", f"{cur['SI']:.2f}", ">0.9 Crit")
