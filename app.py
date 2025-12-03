@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple
-from scipy.signal import welch
 
 # ==========================================
 # 1. UX CONFIGURATION
@@ -17,24 +16,25 @@ st.set_page_config(
 )
 
 # ==========================================
-# 2. DESIGN SYSTEM
+# 2. DESIGN SYSTEM (Clinical Light & Clean)
 # ==========================================
 THEME = {
-    "primary": "#0f172a",
-    "secondary": "#64748b",
-    "accent": "#3b82f6",
-    "success": "#10b981",
-    "warning": "#f59e0b",
-    "danger": "#ef4444",
-    "neutral": "#f1f5f9",
-    "vis_map": "#be185d",
-    "vis_ci": "#059669",
-    "vis_do2": "#7c3aed",
-    "vis_svr": "#d97706",
-    "vis_hr": "#0284c7",
-    "vis_ref": "#cbd5e1",
-    "text": "#0f172a",
-    "grid": "#e2e8f0"
+    # Semantic Colors
+    "primary": "#0f172a",    # Dark Slate (Text)
+    "secondary": "#64748b",  # Muted Slate (Labels)
+    "accent": "#3b82f6",     # Brand Blue
+    "success": "#10b981",    # Emerald
+    "warning": "#f59e0b",    # Amber
+    "danger": "#ef4444",     # Red
+    "neutral": "#f1f5f9",    # Light Grey (Backgrounds)
+    
+    # Data Visualization Palette
+    "vis_map": "#be185d",    # Pink/Magenta
+    "vis_ci": "#059669",     # Green
+    "vis_do2": "#7c3aed",    # Purple
+    "vis_svr": "#d97706",    # Orange
+    "vis_hr": "#0284c7",     # Blue
+    "vis_ref": "#cbd5e1"     # Grey (Reference lines)
 }
 
 STYLING = """
@@ -89,10 +89,6 @@ h1, h2, h3 { letter-spacing: -0.02em; color: #0f172a; }
 
 @dataclass
 class PatientConfig:
-    """
-    Configuration object for patient physiology parameters.
-    Defined BEFORE usage to prevent NameError.
-    """
     shock_type: str = "Septic"
     hb: float = 12.0       
     weight: float = 70.0   
@@ -215,7 +211,10 @@ def predict_response(base_engine, current_sev, current_lac, horizon=60):
                "Fluid": {"mean": [], "upper": [], "lower": []},
                "Pressor": {"mean": [], "upper": [], "lower": []}}
     
+    # Note: Keys here must match keys used in visualization ("Natural", "Fluid", "Pressor")
     scenarios = [("Natural", base_engine.copy()), ("Fluid", base_engine.copy()), ("Pressor", base_engine.copy())]
+    
+    # Interventions
     scenarios[1][1].preload_base *= 1.4
     scenarios[2][1].afterload_base *= 1.5
     
@@ -332,21 +331,21 @@ def plot_compass(df, preds, curr_idx):
                              marker=dict(color=THEME["primary"], size=14, symbol="cross", line=dict(width=2, color="white")), 
                              name="Current"))
     
-    f_ci, f_map = preds["fluid"]["mean"][-1], preds["fluid"]["mean"][-1] # Fixed: Use mean for vector
-    # Actually need both CI and MAP from predictions. 
-    # NOTE: predict_response only returns MAP. 
-    # For full vectors, we'd need CI in predict_response. 
-    # Simplifying vector to just show MAP improvement direction for now.
+    # Vector Visualization
+    # Using heuristics + MAP prediction for vector endpoints
+    target_f_map = preds["Fluid"]["mean"][-1]
+    target_f_ci = cur["CI"] * 1.25 # Heuristic: Fluids increase CI
     
-    # Let's fix the vector visualization to be robust:
-    # Just point arrows towards the predicted MAP outcomes assuming simplified CI changes
-    # Fluid increases CI, Pressor maintains CI.
+    target_p_map = preds["Pressor"]["mean"][-1]
+    target_p_ci = cur["CI"] * 1.0 # Heuristic: Pressors maintain CI (mostly)
     
-    fig.add_annotation(x=cur['CI']*1.2, y=preds['fluid']['mean'][-1], ax=cur['CI'], ay=cur['MAP'],
-                       xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["vis_ci"], text="FLUID")
+    fig.add_annotation(x=target_f_ci, y=target_f_map, ax=cur["CI"], ay=cur["MAP"],
+                       xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["vis_ci"], 
+                       text="FLUID", font=dict(color=THEME["vis_ci"], weight="bold"))
     
-    fig.add_annotation(x=cur['CI']*1.0, y=preds['press']['mean'][-1], ax=cur['CI'], ay=cur['MAP'],
-                       xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["vis_map"], text="PRESSOR")
+    fig.add_annotation(x=target_p_ci, y=target_p_map, ax=cur["CI"], ay=cur["MAP"],
+                       xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["vis_map"], 
+                       text="PRESSOR", font=dict(color=THEME["vis_map"], weight="bold"))
 
     fig.update_layout(_get_layout(height=300, title="Hemodynamic Compass"))
     fig.update_xaxes(title="Cardiac Index (L/min/m²)", range=[1.0, 6.0])
@@ -366,7 +365,7 @@ def plot_starling(df, curr_idx):
     
     d_sv = data['SV'].iloc[-1] - data['SV'].iloc[0]
     slope = d_sv / (data['Preload_Status'].iloc[-1] - data['Preload_Status'].iloc[0] + 0.01)
-    status = "RESPONSIVE" if slope > 2.0 else "NON-RESPONSIVE"
+    status = "RESPONSIVE" if slope > 2.0 else "NON-RESPONDER"
     col = THEME["success"] if slope > 2.0 else THEME["danger"]
     fig.add_annotation(x=10, y=10, text=status, font=dict(color=col, weight="bold"), showarrow=False)
 
@@ -404,7 +403,7 @@ with st.sidebar:
     
     st.markdown("### ⚙️ Physiology")
     shock = st.selectbox("Shock Type", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
-    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5)
+    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5, help="Affects DO2I calculation")
     map_target = st.number_input("Target MAP", 55, 85, 65)
     
     config = PatientConfig(shock_type=shock, hb=hb, map_target=map_target)
