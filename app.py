@@ -150,15 +150,21 @@ class MetabolicDynamics:
 class SignalForensics:
     @staticmethod
     def analyze_driver_source(time_series, is_paced, drug_delta):
-        std_dev = np.std(time_series)
+        # FIX: Ensure numpy array to avoid KeyError in scipy
+        ts_array = np.array(time_series)
+        
+        std_dev = np.std(ts_array)
         if is_paced or std_dev < 0.5:
             return "EXTERNAL: PACEMAKER", 99, "Zero Variance (Quartz Precision)"
-        grad = np.gradient(time_series)
+        
+        grad = np.gradient(ts_array)
         if np.max(np.abs(grad)) > 5.0: 
             return "EXTERNAL: INFUSION/BOLUS", 90, "Non-Physiologic Step Change"
-        f, Pxx = welch(time_series, fs=1/60)
+            
+        f, Pxx = welch(ts_array, fs=1/60)
         pxx_norm = Pxx / np.sum(Pxx)
         spectral_entropy = -np.sum(pxx_norm * np.log2(pxx_norm + 1e-12))
+        
         if spectral_entropy < 1.5: 
             return "EXTERNAL: VENTILATOR ENTRAINMENT", 85, f"Periodic Oscillation"
         return "INTERNAL: AUTONOMIC", 80, "Fractal Complexity (Pink Noise)"
@@ -249,7 +255,7 @@ class PatientSimulator:
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS (COMPLETE)
+# 5. VISUALIZATION FUNCTIONS
 # ==========================================
 def plot_sparkline(data, color, key):
     fig = px.line(x=np.arange(len(data)), y=data)
@@ -260,7 +266,7 @@ def plot_sparkline(data, color, key):
 def plot_bayes_bars(probs, key):
     fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
     fig.update_layout(
-        margin=dict(l=0,r=0,t=20,b=0), height=120, 
+        margin=dict(l=0,r=0,t=20,b=0), height=100, 
         xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]),
         yaxis=dict(title=None),
         title=dict(text="P(Shock State | CI, SVR)", font=dict(size=12, color=THEME['text_muted']))
@@ -273,7 +279,11 @@ def plot_3d_attractor(df, key):
                                        mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis', showscale=False), 
                                        line=dict(width=2, color='rgba(50,50,50,0.5)'), name="State")])
     fig.update_layout(
-        scene=dict(xaxis_title='Power [W]', yaxis_title='SVRI', zaxis_title='Lactate'), 
+        scene=dict(
+            xaxis_title='Power [W]', 
+            yaxis_title='SVRI', 
+            zaxis_title='Lactate [mM]'
+        ), 
         margin=dict(l=0, r=0, b=0, t=25), height=250, 
         title=dict(text="3D Hemodynamic Phase Space", font=dict(size=12, color=THEME['text_muted']))
     )
@@ -282,7 +292,9 @@ def plot_3d_attractor(df, key):
 def plot_chaos_attractor(df, key, source_label):
     hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0)
     rr = 60000 / hr_safe
+    
     color = THEME['external'] if "EXTERNAL" in source_label else 'teal'
+    
     fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color=color, size=4, opacity=0.6), name="R-R"))
     fig.update_layout(
         title=dict(text=f"Chaos: {source_label}", font=dict(size=12, color=THEME['text_muted'])), 
