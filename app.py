@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple, Optional
 from scipy.signal import welch
 
@@ -43,7 +43,8 @@ THEME = {
     "neutral": "#f1f5f9"
 }
 
-STYLING = """
+# Corrected Variable Name
+THEME_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@500&display=swap');
 
@@ -97,43 +98,34 @@ SAFETY_DISCLAIMER = """
 """
 
 # ==========================================
-# 2. DATA MODELS & CONFIGURATION
+# 2. DATA MODELS
 # ==========================================
 
 @dataclass
 class PatientConfig:
     """
     Parameter container for the physiology engine.
-    Includes validation to ensure clinically plausible inputs.
     """
     shock_type: str = "Septic"
     hb: float = 12.0       
     weight: float = 70.0   
     bsa: float = 1.8       
     map_target: float = 65.0
-    
-    # Physiology Tuning
     compliance: float = 1.0 
     metabolic_rate: float = 1.0 
     hr_variability: float = 0.02
-    
-    # Intervention Efficacy (Sensitivity Analysis)
-    fluid_responsiveness: float = 1.0 
-    pressor_sensitivity: float = 1.0
 
     def __post_init__(self):
-        # Safety Guardrails
         if self.hb < 3.0 or self.hb > 20.0: raise ValueError("Hemoglobin out of physiological range")
         if self.map_target < 40 or self.map_target > 100: raise ValueError("Target MAP unsafe")
 
 # ==========================================
-# 3. PHYSIOLOGY ENGINE (Modular Physics)
+# 3. PHYSIOLOGY ENGINE (Physics)
 # ==========================================
 
 class PhysiologyEngine:
     """
     Modular 0-D Cardiovascular Model.
-    Breakdown: Mechanics -> Baroreflex -> Hemodynamics -> Metabolic.
     """
     def __init__(self, config: PatientConfig, preload=12.0, contractility=1.0, afterload=1.0):
         self.cfg = config
@@ -151,96 +143,58 @@ class PhysiologyEngine:
         return PhysiologyEngine(self.cfg, self.preload, self.contractility, self.afterload)
 
     def _apply_shock_modifiers(self, sev: float) -> Tuple[float, float, float]:
-        """Calculates disease-specific modifiers for cardiac parameters."""
         mod_pre, mod_con, mod_aft = 1.0, 1.0, 1.0
-        
         if self.cfg.shock_type == "Septic":
-            mod_aft = max(0.25, 1.0 - 0.7 * sev) # Vasoplegia
-            mod_pre = max(0.6, 1.0 - 0.3 * sev)  # Leak
+            mod_aft = max(0.25, 1.0 - 0.7 * sev)
+            mod_pre = max(0.6, 1.0 - 0.3 * sev)
         elif self.cfg.shock_type == "Cardiogenic":
-            mod_con = max(0.2, 1.0 - 0.8 * sev)  # Pump failure
-            mod_aft = 1.0 + (0.5 * sev)          # Compensatory clamping
+            mod_con = max(0.2, 1.0 - 0.8 * sev)
+            mod_aft = 1.0 + (0.5 * sev)
         elif self.cfg.shock_type == "Hypovolemic":
-            mod_pre = max(0.15, 1.0 - 0.9 * sev) # Volume loss
+            mod_pre = max(0.15, 1.0 - 0.9 * sev)
             mod_con = 1.0 + (0.2 * sev)
             mod_aft = 1.0 + (0.4 * sev)
         elif self.cfg.shock_type == "Obstructive":
-            mod_pre = max(0.1, 1.0 - 0.9 * sev)  # Filling block
+            mod_pre = max(0.1, 1.0 - 0.9 * sev)
             mod_aft = 1.0 + (0.4 * sev)
-
-        return (
-            self.preload * mod_pre,
-            self.contractility * mod_con,
-            self.afterload * mod_aft
-        )
+        return (self.preload * mod_pre, self.contractility * mod_con, self.afterload * mod_aft)
 
     def _calc_mechanics(self, eff_preload: float, eff_contract: float, noise: float) -> float:
-        """Computes Stroke Volume via Frank-Starling Law."""
         sv_max = self.SV_MAX_BASE * eff_contract
-        # Add respiratory variation noise to preload
         noisy_preload = eff_preload * (1 + noise * 0.5)
         sv = sv_max * (noisy_preload**2 / (noisy_preload**2 + self.STARLING_K**2))
         return sv
 
     def _calc_baroreflex(self, map_est: float, noise: float) -> float:
-        """Computes Heart Rate based on CNS feedback."""
         deficit = 85.0 - map_est
         hr_drive = float(np.clip(deficit * 2.0, 0.0, self.MAX_HR - 60.0))
-        
-        # Add stochastic HRV (1/f noise influence)
         hrv_component = noise * 50.0 * self.cfg.hr_variability
         hr = 60.0 + hr_drive + hrv_component
         return max(self.MIN_HR, min(self.MAX_HR, hr))
 
     def _calc_metabolic(self, ci: float, sev: float) -> Tuple[float, float, float, float]:
-        """Computes Oxygen Transport and Lactate Generation."""
-        # SpO2 degradation in severe shock
         spo2 = 0.98 if sev < 0.5 else max(0.85, 0.98 - (sev-0.5)*0.2)
-        
         do2i = ci * self.cfg.hb * 1.34 * spo2 * 10.0
-        
-        # VO2 increases with metabolic stress
         vo2_demand = 110.0 * self.cfg.metabolic_rate * (1.0 + (0.5 * sev))
-        vo2i = min(vo2_demand, do2i * 0.7) # Pathological supply dependency
+        vo2i = min(vo2_demand, do2i * 0.7)
         o2er = vo2i / do2i if do2i > 0 else 1.0
-        
-        # Lactate generation
         lac_gen = 0.0
-        if o2er > 0.35: lac_gen += (o2er - 0.35) * 0.3 # Anaerobic threshold
-        if self.cfg.shock_type == "Septic": lac_gen += (sev * 0.03) # Cytopathic
-        
+        if o2er > 0.35: lac_gen += (o2er - 0.35) * 0.3
+        if self.cfg.shock_type == "Septic": lac_gen += (sev * 0.03)
         return do2i, vo2i, o2er, lac_gen
 
     def step(self, disease_severity=0.0, noise_val=0.0) -> Dict[str, float]:
-        """Execute one simulation time step."""
         sev = np.clip(disease_severity, 0.0, 1.0)
-        
-        # 1. Physics
         eff_pre, eff_con, eff_aft = self._apply_shock_modifiers(sev)
-        
-        # 2. Mechanics
         sv = self._calc_mechanics(eff_pre, eff_con, noise_val)
-        
-        # 3. Hemodynamics (Initial estimate for Baroreflex)
         svr_dyne = 1200.0 * eff_aft
-        # Approx MAP estimate for baroreceptors
-        # Note: This is a simplification; real baroreceptors sense pulsatile stretch
         map_est = (sv * 70.0 * eff_aft * 0.05) + 5.0
-        
         hr = self._calc_baroreflex(map_est, noise_val)
-        
         co = (hr * sv) / 1000.0
         ci = co / self.cfg.bsa
-        
-        # Ohm's Law for MAP
         map_val = (co * svr_dyne / 80.0) + 5.0
-        
-        # Pulse Pressure (Stiffness)
         pp_val = (sv / 1.5) * (1.0 / self.cfg.compliance)
-        
-        # 4. Metabolic
         do2i, vo2i, o2er, lac_gen = self._calc_metabolic(ci, sev)
-        
         return {
             "HR": hr, "SV": sv, "CO": co, "CI": ci, "MAP": map_val, "SVR": svr_dyne, 
             "DO2I": do2i, "VO2I": vo2i, "O2ER": o2er, "PP": pp_val,
@@ -248,119 +202,73 @@ class PhysiologyEngine:
         }
 
 # ==========================================
-# 4. SIMULATION ENGINE (Scalable & Predictive)
+# 4. SIMULATION ENGINE (Orchestrator)
 # ==========================================
 
 class SimulationEngine:
-    """
-    Manages the simulation loop, noise generation, and predictive branching.
-    """
     @staticmethod
     def generate_noise(mins: int, magnitude: float, seed: int) -> np.ndarray:
-        """Vectorized 1/f noise generation."""
         rng = np.random.default_rng(seed)
         white = rng.normal(0, 1, mins)
-        # Simple low-pass filter for Pink Noise approximation
         return np.convolve(white, np.ones(10)/10, mode='same') * magnitude
 
     @staticmethod
     def run_trajectory(config: PatientConfig, mins=720, seed=42) -> pd.DataFrame:
-        """
-        Simulates the patient's past and current state.
-        """
         engine = PhysiologyEngine(config)
         noise_vec = SimulationEngine.generate_noise(mins, 1.0, seed)
-        
-        # Disease Progression (Sigmoid)
         x = np.linspace(-6, 6, mins)
         progression = 1 / (1 + np.exp(-x)) * 0.9
-        
         history = []
         curr_lac = 1.0
-        
-        # Main Loop
         for t in range(mins):
             state = engine.step(progression[t], noise_vec[t])
-            
-            # State Integration (Lactate)
             clearance = curr_lac * 0.005 
             curr_lac = curr_lac - clearance + state["Lac_Gen"]
             state["Lactate"] = max(0.5, curr_lac)
-            
-            # Renal Autoregulation (Sigmoid)
             map_dist = state["MAP"] - config.map_target
             uo = 1.0 / (1.0 + np.exp(-0.3 * map_dist)) * 1.5
             state["Urine"] = max(0.0, uo + np.random.normal(0, 0.05))
-            
             history.append(state)
-            
         df = pd.DataFrame(history)
         df["SVRI"] = df["SVR"] * config.bsa
-        
-        # SOFA Proxy Calculation
         df["SOFA"] = 0
         df.loc[df["MAP"] < 70, "SOFA"] += 1
         df.loc[df["Urine"] < 0.5, "SOFA"] += 1
         df.loc[df["Lactate"] > 2.0, "SOFA"] += 1
-        
         return df
 
     @staticmethod
     def predict_multiverse(base_engine: PhysiologyEngine, current_sev: float, 
                           current_lac: float, horizon: int = 30, iterations: int = 20) -> Dict[str, Any]:
-        """
-        Monte Carlo Simulation for Predictive Confidence Intervals.
-        Runs multiple stochastic paths for each intervention scenario.
-        """
         times = np.arange(horizon)
         futures = {}
-        
-        # Define Interventions
         scenarios = {
             "Natural": lambda e: None,
             "Fluid": lambda e: setattr(e, 'preload', e.preload * 1.4),
             "Pressor": lambda e: setattr(e, 'afterload', e.afterload * 1.5)
         }
-        
         for name, mod_func in scenarios.items():
-            # Run Monte Carlo iterations
             mc_runs = []
             for _ in range(iterations):
                 eng = base_engine.copy()
                 mod_func(eng)
-                
-                run_vals = []
-                # Generate random noise for this future path
                 noise = SimulationEngine.generate_noise(horizon, 1.0, seed=None)
-                
+                run_vals = []
                 for t in times:
                     s = eng.step(current_sev + 0.001*t, noise[t])
                     run_vals.append(s["MAP"])
                 mc_runs.append(run_vals)
-            
-            # Calculate Statistics
             mc_runs = np.array(mc_runs)
             mean_traj = np.mean(mc_runs, axis=0)
             std_traj = np.std(mc_runs, axis=0)
-            
-            futures[name] = {
-                "mean": mean_traj,
-                "upper": mean_traj + (1.96 * std_traj),
-                "lower": mean_traj - (1.96 * std_traj)
-            }
-            
+            futures[name] = {"mean": mean_traj, "upper": mean_traj + (1.96 * std_traj), "lower": mean_traj - (1.96 * std_traj)}
         return futures
 
 # ==========================================
-# 5. VISUALIZATION ENGINE (ChartFactory)
+# 5. VISUALIZATION ENGINE
 # ==========================================
 
 class Visuals:
-    """
-    Static factory for Plotly visualizations.
-    Encapsulates styling and logic for consistent UI.
-    """
-    
     @staticmethod
     def _hex_to_rgba(h, alpha):
         h = h.lstrip('#')
@@ -378,37 +286,17 @@ class Visuals:
 
     @staticmethod
     def plot_spark(df: pd.DataFrame, col: str, color: str, limits: Tuple[float, float]) -> go.Figure:
-        """
-        Generates a Sparkline with Safety Corridor background.
-        
-        Args:
-            df: Dataframe with historical data.
-            col: Column name to plot.
-            color: Hex color code.
-            limits: (min, max) tuple for the safety background zone.
-        """
         data = df[col].iloc[-60:]
         fig = go.Figure()
-        
-        # Safety Zone
         fig.add_shape(type="rect", x0=data.index[0], x1=data.index[-1], y0=limits[0], y1=limits[1],
                       fillcolor="rgba(0,0,0,0.04)", line_width=0, layer="below")
-        
-        # Trend
         rgba = Visuals._hex_to_rgba(color, 0.1)
-        fig.add_trace(go.Scatter(
-            x=data.index, y=data.values, mode='lines', 
-            line=dict(color=color, width=2.5), fill='tozeroy', fillcolor=rgba, hoverinfo='skip'
-        ))
-        
-        # Head
+        fig.add_trace(go.Scatter(x=data.index, y=data.values, mode='lines', 
+                                 line=dict(color=color, width=2.5), fill='tozeroy', fillcolor=rgba, hoverinfo='skip'))
         fig.add_trace(go.Scatter(x=[data.index[-1]], y=[data.values[-1]], mode='markers',
                                  marker=dict(color=color, size=8, line=dict(color='white', width=1))))
-        
         fig.update_layout(Visuals._clean_layout(height=50))
         fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
-        
-        # Dynamic Range
         y_min = min(data.min(), limits[0]) * 0.95
         y_max = max(data.max(), limits[1]) * 1.05
         fig.update_yaxes(range=[y_min, y_max])
@@ -416,26 +304,16 @@ class Visuals:
 
     @staticmethod
     def plot_horizon(futures: Dict, target: float) -> go.Figure:
-        """
-        Visualizes Predictive Horizon with Confidence Intervals.
-        """
         t = np.arange(len(futures["Natural"]["mean"]))
         fig = go.Figure()
-        
         def add_scenario(name, color, data, dash=None):
             rgba = Visuals._hex_to_rgba(color, 0.15)
-            # CI Band
-            fig.add_trace(go.Scatter(
-                x=np.concatenate([t, t[::-1]]), y=np.concatenate([data["upper"], data["lower"][::-1]]),
-                fill='toself', fillcolor=rgba, line=dict(width=0), showlegend=False, hoverinfo='skip'
-            ))
-            # Mean Trend
+            fig.add_trace(go.Scatter(x=np.concatenate([t, t[::-1]]), y=np.concatenate([data["upper"], data["lower"][::-1]]),
+                                     fill='toself', fillcolor=rgba, line=dict(width=0), showlegend=False, hoverinfo='skip'))
             fig.add_trace(go.Scatter(x=t, y=data["mean"], line=dict(color=color, width=3, dash=dash), name=name))
-
         add_scenario("Natural Course", "#94a3b8", futures["Natural"], "dot")
         add_scenario("Fluid (+1L)", THEME["ci"], futures["Fluid"])
         add_scenario("Pressor", THEME["map"], futures["Pressor"])
-        
         fig.add_hline(y=target, line_color=THEME["crit"], line_dash="solid")
         fig.update_layout(Visuals._clean_layout(height=280, title="Therapeutic Horizon (30 min)"))
         fig.update_layout(legend=dict(orientation="h", y=1.1, x=0))
@@ -445,43 +323,26 @@ class Visuals:
 
     @staticmethod
     def plot_compass(df: pd.DataFrame, preds: Dict, curr_idx: int) -> go.Figure:
-        """
-        Hemodynamic Compass (Diagnostic Quadrants).
-        """
         start = max(0, curr_idx - 60)
         data = df.iloc[start:curr_idx]
         cur = df.iloc[curr_idx]
         fig = go.Figure()
-        
-        # Diagnostic Zones
-        zones = [
-            (0, 0, 2.5, 65, THEME["crit"], "CRITICAL SHOCK"),
-            (2.5, 0, 6.0, 65, THEME["warn"], "VASOPLEGIA"),
-            (2.5, 65, 6.0, 110, THEME["ok"], "GOAL")
-        ]
-        
+        zones = [(0, 0, 2.5, 65, THEME["crit"], "CRITICAL SHOCK"),
+                 (2.5, 0, 6.0, 65, THEME["warn"], "VASOPLEGIA"),
+                 (2.5, 65, 6.0, 110, THEME["ok"], "GOAL")]
         for x0, y0, x1, y1, col, txt in zones:
             rgba = Visuals._hex_to_rgba(col, 0.1)
             fig.add_shape(type="rect", x0=x0, y0=y0, x1=x1, y1=y1, fillcolor=rgba, line_width=0, layer="below")
             fig.add_annotation(x=(x0+x1)/2, y=(y0+y1)/2, text=txt, font=dict(color=col, size=10, weight="bold"), showarrow=False)
-
         fig.add_trace(go.Scatter(x=data["CI"], y=data["MAP"], mode="lines", line=dict(color="#94a3b8", dash="dot")))
         fig.add_trace(go.Scatter(x=[cur["CI"]], y=[cur["MAP"]], mode="markers", 
                                  marker=dict(color="#0f172a", size=14, symbol="cross", line=dict(width=2, color="white"))))
-        
-        # Vector Annotations (Using Mean prediction)
         target_f_map = preds["Fluid"]["mean"][-1]
         target_f_ci = cur["CI"] * 1.25
-        
         target_p_map = preds["Pressor"]["mean"][-1]
         target_p_ci = cur["CI"] * 1.0
-        
-        fig.add_annotation(x=target_f_ci, y=target_f_map, ax=cur["CI"], ay=cur["MAP"],
-                           xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["ci"], text="FLUID")
-        
-        fig.add_annotation(x=target_p_ci, y=target_p_map, ax=cur["CI"], ay=cur["MAP"],
-                           xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["map"], text="PRESSOR")
-
+        fig.add_annotation(x=target_f_ci, y=target_f_map, ax=cur["CI"], ay=cur["MAP"], xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["ci"], text="FLUID")
+        fig.add_annotation(x=target_p_ci, y=target_p_map, ax=cur["CI"], ay=cur["MAP"], xref="x", yref="y", axref="x", ayref="y", arrowhead=2, arrowcolor=THEME["map"], text="PRESSOR")
         fig.update_layout(Visuals._clean_layout(height=300, title="Hemodynamic Compass"))
         fig.update_xaxes(title="Cardiac Index (L/min/m²)", range=[1.0, 6.0], gridcolor=THEME["grid"])
         fig.update_yaxes(title="MAP (mmHg)", range=[30, 110], gridcolor=THEME["grid"])
@@ -490,27 +351,17 @@ class Visuals:
 
     @staticmethod
     def plot_starling(df: pd.DataFrame, curr_idx: int) -> go.Figure:
-        """Frank-Starling Fluid Responsiveness Vector."""
         data = df.iloc[max(0, curr_idx-30):curr_idx]
         fig = go.Figure()
-        
-        # Reference Curve
         x = np.linspace(0, 20, 100); y = np.log(x+1)*30
         fig.add_trace(go.Scatter(x=x, y=y, line=dict(color=THEME["neutral"], dash='dot'), name='Ideal'))
-        
-        # Patient Vector
-        fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', 
-                                 line=dict(color=THEME["ci"], width=3)))
-        fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], 
-                                 mode='markers', marker=dict(color=THEME["ci"], size=10)))
-        
+        fig.add_trace(go.Scatter(x=data['Preload_Status'], y=data['SV'], mode='lines', line=dict(color=THEME["ci"], width=3)))
+        fig.add_trace(go.Scatter(x=[data['Preload_Status'].iloc[-1]], y=[data['SV'].iloc[-1]], mode='markers', marker=dict(color=THEME["ci"], size=10)))
         d_sv = data['SV'].iloc[-1] - data['SV'].iloc[0]
         slope = d_sv / (data['Preload_Status'].iloc[-1] - data['Preload_Status'].iloc[0] + 0.01)
         status = "RESPONSIVE" if slope > 2.0 else "NON-RESPONDER"
         col = THEME["ok"] if slope > 2.0 else THEME["crit"]
-        
         fig.add_annotation(x=10, y=10, text=status, font=dict(color=col, weight="bold"), showarrow=False)
-
         fig.update_layout(Visuals._clean_layout(height=250, title="Fluid Responsiveness"))
         fig.update_xaxes(title="Preload (CVP)", gridcolor=THEME["grid"])
         fig.update_yaxes(title="Stroke Volume (mL)", gridcolor=THEME["grid"])
@@ -519,18 +370,14 @@ class Visuals:
 
     @staticmethod
     def plot_oxygen(df: pd.DataFrame, curr_idx: int) -> go.Figure:
-        """Oxygen Kinetics (DO2 vs Lactate)."""
         start = max(0, curr_idx - 180)
         data = df.iloc[start:curr_idx]
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        
         fig.add_trace(go.Scatter(x=data.index, y=data['DO2I'], fill='tozeroy', 
                                  fillcolor=Visuals._hex_to_rgba(THEME["do2"], 0.2),
                                  line=dict(color=THEME["do2"]), name='Delivery'), secondary_y=False)
-        
         fig.add_trace(go.Scatter(x=data.index, y=data['Lactate'], 
                                  line=dict(color=THEME["crit"], width=2), name='Lactate'), secondary_y=True)
-        
         fig.update_layout(Visuals._clean_layout(height=250, title="Oxygen Kinetics"))
         fig.update_yaxes(title="DO2I (mL/m²)", secondary_y=False, gridcolor=THEME["grid"])
         fig.update_yaxes(title="Lactate", secondary_y=True, showgrid=False)
@@ -569,15 +416,11 @@ st.markdown(SAFETY_DISCLAIMER, unsafe_allow_html=True)
 # --- SIDEBAR CONTROL ---
 with st.sidebar:
     st.header("TITAN | Control")
-    
-    # 1. Config
     st.markdown("### ⚙️ Physiology")
     shock = st.selectbox("Shock Type", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
     hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5)
     map_target = st.number_input("Target MAP", 55, 85, 65)
-    
-    # 2. Timeline
-    curr_time = st.slider("Time (min)", 60, 720, 720)
+    curr_time = st.slider("Timeline (min)", 60, 720, 720)
     
     if st.button("Refresh Simulation"):
         st.cache_data.clear()
