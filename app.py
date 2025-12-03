@@ -319,7 +319,7 @@ def plot_respiratory_status(df, curr_idx):
     fig.update_yaxes(title="PaO2/FiO2", range=[50, 500])
     return fig
 
-def plot_sofa_breakdown(row, sofa_score):
+def plot_sofa_radar(row, sofa_score):
     """Radar chart of SOFA components."""
     # Calculate components for visualization
     c_resp = 4 if row['PaFi'] < 100 else (3 if row['PaFi'] < 200 else (2 if row['PaFi'] < 300 else (1 if row['PaFi'] < 400 else 0)))
