@@ -12,7 +12,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.decomposition import PCA
 import statsmodels.api as sm
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+# from statsmodels.tsa.statespace.sarimax import SARIMAX # Optimization: simplified in forecast engine
 import time
 
 # ==========================================
@@ -327,7 +327,7 @@ class PatientSimulator:
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS
+# 5. VISUALIZATION FUNCTIONS (ENHANCED)
 # ==========================================
 def plot_sparkline(data, color, key):
     fig = px.line(x=np.arange(len(data)), y=data)
@@ -336,58 +336,116 @@ def plot_sparkline(data, color, key):
     return fig
 
 def plot_bayes_bars(probs, key):
-    fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
-    fig.update_layout(margin=dict(l=0,r=0,t=20,b=0), height=100, xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]), yaxis=dict(title=None))
+    fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', 
+                           marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
+    fig.update_layout(
+        title=dict(text="Probabilistic State Estimation", font=dict(size=12, color=THEME['text_muted'])),
+        margin=dict(l=0,r=0,t=20,b=0), height=120, 
+        xaxis=dict(showticklabels=True, title="Probability [%]", range=[0, 100]), 
+        yaxis=dict(title=None)
+    )
     return fig
 
 def plot_3d_attractor(df, key):
     recent = df.iloc[-60:]
-    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis'), line=dict(width=2))])
-    fig.update_layout(scene=dict(xaxis_title='Power', yaxis_title='SVRI', zaxis_title='Lactate'), margin=dict(l=0, r=0, b=0, t=0), height=250, title="3D Phase Space")
+    fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], 
+                                       mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis', showscale=False), 
+                                       line=dict(width=2, color='rgba(50,50,50,0.5)'), name="State Trajectory")])
+    fig.update_layout(
+        scene=dict(
+            xaxis_title='Power [W]', 
+            yaxis_title='SVRI [dyn·s·cm⁻⁵·m²]', 
+            zaxis_title='Lactate [mmol/L]'), 
+        margin=dict(l=0, r=0, b=0, t=25), height=250, 
+        title=dict(text="3D Hemodynamic Phase Space (Color=Time)", font=dict(size=12, color=THEME['text_muted']))
+    )
     return fig
 
 def plot_chaos_attractor(df, key, source_label):
-    hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0); rr = 60000 / hr_safe
+    hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0)
+    rr = 60000 / hr_safe
     color = THEME['external'] if "EXTERNAL" in source_label else 'teal'
-    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color=color, size=4, opacity=0.6)))
-    fig.update_layout(title=f"Chaos: {source_label}", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="RR(n)", yaxis_title="RR(n+1)")
+    fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', 
+                               marker=dict(color=color, size=4, opacity=0.6), name="R-R Interval"))
+    
+    # Identity line explanation
+    fig.add_trace(go.Scatter(x=[300, 1200], y=[300, 1200], mode='lines', line=dict(dash='dot', color='gray'), name="Identity Line"))
+    
+    fig.update_layout(
+        title=dict(text=f"Chaos (Poincaré Plot): {source_label}", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="RR(n) [ms]", yaxis_title="RR(n+1) [ms]", showlegend=False
+    )
     return fig
 
 def plot_spectral_analysis(df, key):
-    data = df['HR'].iloc[-120:].to_numpy(); f, Pxx = welch(data, fs=1/60)
-    fig = px.line(x=f, y=Pxx, title="Spectral HRV")
-    fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF"); fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF")
-    fig.update_layout(height=200, margin=dict(l=20,r=20,t=30,b=20))
+    data = df['HR'].iloc[-120:].to_numpy()
+    f, Pxx = welch(data, fs=1/60)
+    fig = px.line(x=f, y=Pxx)
+    fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF (Symp)"); 
+    fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF (Vagal)")
+    fig.update_layout(
+        title=dict(text="Spectral HRV (Autonomic Tone)", font=dict(size=12, color=THEME['text_muted'])),
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="Frequency [Hz]", yaxis_title="Power Density [ms²/Hz]"
+    )
     return fig
 
 def plot_monte_carlo_fan(df, p10, p50, p90, key):
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="Hx", line=dict(color=THEME['text_main'])))
+    fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="Historical Data", line=dict(color=THEME['text_main'])))
     fx = np.arange(30, 60)
-    fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0), name="80% CI"))
-    fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median"))
-    fig.update_layout(height=200, title="Stochastic Forecast", margin=dict(l=20,r=20,t=30,b=20), xaxis_title="Time", yaxis_title="MAP")
+    fig.add_trace(go.Scatter(x=np.concatenate([fx, fx[::-1]]), y=np.concatenate([p90, p10[::-1]]), 
+                             fill='toself', fillcolor='rgba(0,0,255,0.1)', line=dict(width=0), name="80% Conf. Interval"))
+    fig.add_trace(go.Scatter(x=fx, y=p50, line=dict(dash='dot', color='blue'), name="Median Forecast"))
+    fig.update_layout(
+        height=200, title=dict(text="Stochastic MAP Forecast (30min)", font=dict(size=12, color=THEME['text_muted'])), 
+        margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="Time [min]", yaxis_title="MAP [mmHg]", legend=dict(orientation="h", y=1.1)
+    )
     return fig
 
 def plot_hemodynamic_profile(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
-    fig.add_hline(y=2000, line_dash="dot", annotation_text="Vaso"); fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow")
-    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', marker=dict(color=recent.index, colorscale='Viridis')))
-    fig.update_layout(title="Pump vs Pipes", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CI", yaxis_title="SVRI")
+    fig.add_hline(y=2000, line_dash="dot", annotation_text="Vasoconstricted (High SVR)"); 
+    fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow (Shock)")
+    
+    # Quadrant Labels
+    fig.add_annotation(x=1.5, y=2500, text="Cold/Wet", showarrow=False, font=dict(size=10, color='red'))
+    fig.add_annotation(x=4.0, y=1000, text="Warm/Dry", showarrow=False, font=dict(size=10, color='green'))
+    
+    fig.add_trace(go.Scatter(x=recent['CI'], y=recent['SVRI'], mode='markers', 
+                             marker=dict(color=recent.index, colorscale='Viridis', showscale=False), name="Patient State"))
+    fig.update_layout(
+        title=dict(text="Pump vs Pipes (Forrester Classification)", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="Cardiac Index [L/min/m²]", yaxis_title="SVRI [dyn·s·cm⁻⁵·m²]"
+    )
     return fig
 
 def plot_phase_space(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=15, fillcolor="rgba(255,0,0,0.1)", line_width=0)
-    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', marker=dict(color=recent.index, colorscale='Bluered')))
-    fig.update_layout(title="Coupling", height=200, margin=dict(l=20,r=20,t=30,b=20), xaxis_title="CPO", yaxis_title="Lac")
+    fig.add_annotation(x=0.3, y=8, text="METABOLIC UNCOUPLING", showarrow=False, font=dict(color='red', size=10))
+    
+    fig.add_trace(go.Scatter(x=recent['CPO'], y=recent['Lactate'], mode='lines+markers', 
+                             marker=dict(color=recent.index, colorscale='Bluered', showscale=False), name="Physiologic Trajectory"))
+    fig.update_layout(
+        title=dict(text="Hemo-Metabolic Coupling", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="Cardiac Power [W]", yaxis_title="Lactate [mmol/L]"
+    )
     return fig
 
 def plot_vq_scatter(df, key):
-    fig = px.scatter(df.iloc[-60:], x="PaO2", y="SpO2", color="PaCO2", color_continuous_scale="Bluered")
-    fig.update_layout(title="V/Q Mismatch", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    fig = px.scatter(df.iloc[-60:], x="PaO2", y="SpO2", color="PaCO2", 
+                     color_continuous_scale="Bluered", labels={"PaO2": "PaO2 [mmHg]", "SpO2": "SpO2 [%]", "PaCO2": "PaCO2 [mmHg]"})
+    fig.update_layout(
+        title=dict(text="V/Q Mismatch & Oxygenation Status", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20)
+    )
     return fig
 
 def plot_counterfactual(df, drugs, case, bsa, peep, key):
@@ -395,43 +453,72 @@ def plot_counterfactual(df, drugs, case, bsa, peep, key):
     base = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21}
     df_b = sim.run(case, base, 0, bsa, peep, False, 'Spontaneous')
     fig = go.Figure()
-    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="Rx", line=dict(color=THEME['ok'])))
-    fig.add_trace(go.Scatter(y=df_b['MAP'], name="No Rx", line=dict(dash='dot', color=THEME['crit'])))
-    fig.update_layout(title="Counterfactual", height=200, margin=dict(l=20,r=20,t=30,b=20))
+    fig.add_trace(go.Scatter(y=df['MAP'].iloc[-60:], name="With Intervention", line=dict(color=THEME['ok'])))
+    fig.add_trace(go.Scatter(y=df_b['MAP'], name="Natural History (No Rx)", line=dict(dash='dot', color=THEME['crit'])))
+    fig.update_layout(
+        title=dict(text="Counterfactual Projection (Effectiveness)", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=20,r=20,t=30,b=20), 
+        xaxis_title="Time [min]", yaxis_title="MAP [mmHg]", legend=dict(orientation="h", y=1.1)
+    )
     return fig
 
 def plot_spc_suite(df, key):
     data = df['MAP'].to_numpy(); subgroups = QualityAssuranceEngine.get_subgroups(data)
     xbar = np.mean(subgroups, axis=1); r = np.ptp(subgroups, axis=1)
-    fig = make_subplots(rows=1, cols=3, subplot_titles=("X-Bar", "R-Chart", "I-MR"))
+    fig = make_subplots(rows=1, cols=3, subplot_titles=("X-Bar (Mean)", "R-Chart (Range)", "I-MR (Moving Range)"))
     ucl_x = np.mean(xbar) + 3*np.std(xbar); ucl_r = np.mean(r) + 3*np.std(r)
+    
     fig.add_trace(go.Scatter(y=xbar, mode='lines+markers', name="X-Bar"), row=1, col=1)
-    fig.add_hline(y=ucl_x, line_color="red", row=1, col=1)
+    fig.add_hline(y=ucl_x, line_color="red", row=1, col=1, annotation_text="UCL")
+    
     fig.add_trace(go.Scatter(y=r, mode='lines+markers', name="Range"), row=1, col=2)
-    fig.add_hline(y=ucl_r, line_color="red", row=1, col=2)
+    fig.add_hline(y=ucl_r, line_color="red", row=1, col=2, annotation_text="UCL")
+    
     fig.add_trace(go.Scatter(y=np.abs(np.diff(data)), mode='lines', name="MR"), row=1, col=3)
-    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Statistical Process Control (SPC)")
+    
+    fig.update_layout(
+        height=250, margin=dict(l=10,r=10,t=30,b=20), 
+        title=dict(text="Statistical Process Control (SPC) - MAP Stability", font=dict(size=12, color=THEME['text_muted']))
+    )
     return fig
 
 def plot_method_comparison(df, key):
     true_bp = df['MAP'].iloc[-120:].to_numpy(); cuff_bp = QualityAssuranceEngine.simulate_noisy_sensor(true_bp)
-    fig = make_subplots(rows=1, cols=3, subplot_titles=("Correlation", "Bland-Altman", "Residuals"))
-    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp, mode='markers'), row=1, col=1)
+    fig = make_subplots(rows=1, cols=3, subplot_titles=("Correlation (Deming)", "Bland-Altman Plot", "Residual Analysis"))
+    
+    # 1. Correlation
+    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp, mode='markers', name="Points"), row=1, col=1)
+    fig.update_xaxes(title_text="Art Line [mmHg]", row=1, col=1); fig.update_yaxes(title_text="Cuff [mmHg]", row=1, col=1)
+    
+    # 2. Bland-Altman
     mean = (true_bp + cuff_bp) / 2; diff = true_bp - cuff_bp
-    fig.add_trace(go.Scatter(x=mean, y=diff, mode='markers'), row=1, col=2)
-    fig.add_hline(y=np.mean(diff) + 1.96*np.std(diff), line_dash="dot", line_color="red", row=1, col=2)
+    sd_diff = np.std(diff)
+    fig.add_trace(go.Scatter(x=mean, y=diff, mode='markers', name="Diff"), row=1, col=2)
+    fig.add_hline(y=np.mean(diff) + 1.96*sd_diff, line_dash="dot", line_color="red", annotation_text="+1.96 SD", row=1, col=2)
+    fig.add_hline(y=np.mean(diff) - 1.96*sd_diff, line_dash="dot", line_color="red", annotation_text="-1.96 SD", row=1, col=2)
+    
+    # 3. Residuals
     slope, intercept, _, _, _ = linregress(true_bp, cuff_bp)
-    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp - (slope*true_bp + intercept), mode='markers'), row=1, col=3)
-    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Method Comparison")
+    fig.add_trace(go.Scatter(x=true_bp, y=cuff_bp - (slope*true_bp + intercept), mode='markers', name="Resid"), row=1, col=3)
+    
+    fig.update_layout(
+        height=250, margin=dict(l=10,r=10,t=30,b=20), 
+        title=dict(text="Sensor Validation (Arterial Line vs NIBP)", font=dict(size=12, color=THEME['text_muted']))
+    )
     return fig
 
 def plot_cpk_tolerance(df, key):
     data = df['MAP'].iloc[-120:].to_numpy(); cpk = QualityAssuranceEngine.calculate_cpk(data, CONSTANTS.MAP_USL, CONSTANTS.MAP_LSL)
-    fig = make_subplots(rows=1, cols=2, subplot_titles=(f"Process Cap (Cpk={cpk:.2f})", "Tolerance"))
-    x = np.linspace(40, 130, 100); fig.add_trace(go.Scatter(x=x, y=norm.pdf(x, np.mean(data), np.std(data)), fill='tozeroy'), row=1, col=1)
-    fig.add_vline(x=CONSTANTS.MAP_LSL, line_color="red", row=1, col=1); fig.add_vline(x=CONSTANTS.MAP_USL, line_color="red", row=1, col=1)
-    fig.add_trace(go.Scatter(y=data, mode='lines'), row=1, col=2)
-    fig.add_hrect(y0=CONSTANTS.MAP_LSL, y1=CONSTANTS.MAP_USL, fillcolor="green", opacity=0.1, row=1, col=2)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=(f"Process Capability (Cpk={cpk:.2f})", "Tolerance Tracking"))
+    
+    x = np.linspace(40, 130, 100); 
+    fig.add_trace(go.Scatter(x=x, y=norm.pdf(x, np.mean(data), np.std(data)), fill='tozeroy', name="Dist"), row=1, col=1)
+    fig.add_vline(x=CONSTANTS.MAP_LSL, line_color="red", row=1, col=1, annotation_text="LSL"); 
+    fig.add_vline(x=CONSTANTS.MAP_USL, line_color="red", row=1, col=1, annotation_text="USL")
+    
+    fig.add_trace(go.Scatter(y=data, mode='lines', name="Value"), row=1, col=2)
+    fig.add_hrect(y0=CONSTANTS.MAP_LSL, y1=CONSTANTS.MAP_USL, fillcolor="green", opacity=0.1, row=1, col=2, annotation_text="Spec Zone")
+    
     fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20))
     return fig
 
@@ -439,20 +526,30 @@ def plot_wasserstein(df, key):
     early = df['MAP'].iloc[:60]; late = df['MAP'].iloc[-60:]
     dist = wasserstein_distance(early, late)
     fig = go.Figure()
-    fig.add_trace(go.Histogram(x=early, name="T-0", opacity=0.5))
-    fig.add_trace(go.Histogram(x=late, name="T-Curr", opacity=0.5))
-    fig.update_layout(title=f"Dist Shift (W={dist:.1f})", height=200, margin=dict(l=10,r=10,t=30,b=20), barmode='overlay')
+    fig.add_trace(go.Histogram(x=early, name="T-0 (Baseline)", opacity=0.5))
+    fig.add_trace(go.Histogram(x=late, name="T-Current", opacity=0.5))
+    fig.update_layout(
+        title=dict(text=f"Distribution Shift (Wasserstein Distance={dist:.2f})", font=dict(size=12, color=THEME['text_muted'])), 
+        height=200, margin=dict(l=10,r=10,t=30,b=20), barmode='overlay',
+        xaxis_title="MAP [mmHg]", yaxis_title="Count"
+    )
     return fig
 
 def plot_multivariate_spc(df, key):
     t2, ucl = QualityAssuranceEngine.calc_hotelling_t2(df)
     spe, spe_lim = QualityAssuranceEngine.calc_spe_pca(df)
-    fig = make_subplots(rows=1, cols=2, subplot_titles=("Hotelling T² (Multivariate)", "SPE (Residuals)"))
-    fig.add_trace(go.Scatter(y=t2, mode='lines', name="T²"), row=1, col=1)
-    fig.add_hline(y=ucl, line_color="red", line_dash="dot", row=1, col=1)
-    fig.add_trace(go.Scatter(y=spe, mode='lines', name="SPE"), row=1, col=2)
-    fig.add_hline(y=spe_lim, line_color="red", line_dash="dot", row=1, col=2)
-    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Multivariate SPC")
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Hotelling T² (Multivariate Deviation)", "SPE (Residual Error)"))
+    
+    fig.add_trace(go.Scatter(y=t2, mode='lines', name="T² Score"), row=1, col=1)
+    fig.add_hline(y=ucl, line_color="red", line_dash="dot", row=1, col=1, annotation_text="99% Limit")
+    
+    fig.add_trace(go.Scatter(y=spe, mode='lines', name="SPE Score"), row=1, col=2)
+    fig.add_hline(y=spe_lim, line_color="red", line_dash="dot", row=1, col=2, annotation_text="95% Limit")
+    
+    fig.update_layout(
+        height=250, margin=dict(l=10,r=10,t=30,b=20), 
+        title=dict(text="Multivariate SPC (System-Wide Anomaly Detection)", font=dict(size=12, color=THEME['text_muted']))
+    )
     return fig
 
 def plot_advanced_control(df, key):
@@ -461,35 +558,36 @@ def plot_advanced_control(df, key):
     cp, cm = QualityAssuranceEngine.calc_cusum(data)
     violations = QualityAssuranceEngine.check_westgard(data, np.mean(data), np.std(data))
     
-    fig = make_subplots(rows=1, cols=2, subplot_titles=("EWMA (Small Shift)", "CUSUM (Cumulative Dev)"))
-    fig.add_trace(go.Scatter(y=data, mode='lines', line=dict(color='lightgray'), name="Raw"), row=1, col=1)
-    fig.add_trace(go.Scatter(y=ewma, mode='lines', line=dict(color='blue'), name="EWMA"), row=1, col=1)
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("EWMA (Small Shift Detection)", "CUSUM (Cumulative Deviation)"))
+    fig.add_trace(go.Scatter(y=data, mode='lines', line=dict(color='lightgray'), name="Raw Data"), row=1, col=1)
+    fig.add_trace(go.Scatter(y=ewma, mode='lines', line=dict(color='blue'), name="EWMA (Smoothed)"), row=1, col=1)
     
-    fig.add_trace(go.Scatter(y=cp, mode='lines', line=dict(color='green'), name="C+"), row=1, col=2)
-    fig.add_trace(go.Scatter(y=cm, mode='lines', line=dict(color='red'), name="C-"), row=1, col=2)
-    fig.add_hline(y=CONSTANTS.CUSUM_H, line_dash="dot", line_color="black", row=1, col=2)
+    fig.add_trace(go.Scatter(y=cp, mode='lines', line=dict(color='green'), name="C+ (High Side)"), row=1, col=2)
+    fig.add_trace(go.Scatter(y=cm, mode='lines', line=dict(color='red'), name="C- (Low Side)"), row=1, col=2)
+    fig.add_hline(y=CONSTANTS.CUSUM_H, line_dash="dot", line_color="black", row=1, col=2, annotation_text="Limit")
     
-    if violations:
-        # Just show last violation on chart title to avoid clutter
-        fig.update_layout(title=f"Advanced Control (Last Violation: {violations[-1][1]})")
-    else:
-        fig.update_layout(title="Advanced Control (Stable)")
-        
-    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20))
+    status = f"Last Violation: {violations[-1][1]}" if violations else "Stable"
+    fig.update_layout(
+        height=250, margin=dict(l=10,r=10,t=30,b=20),
+        title=dict(text=f"Advanced Control Algorithms (Westgard Status: {status})", font=dict(size=12, color=THEME['text_muted']))
+    )
     return fig
 
 def plot_advanced_forecast(df, key):
-    # Use last 60 mins for forecasting
     data = df['MAP'].iloc[-60:].to_numpy()
     hw, sarima = ForecastingEngine.fit_predict_models(data, steps=30)
     
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=np.arange(60), y=data, name="History", line=dict(color='black')))
     future_x = np.arange(60, 90)
-    fig.add_trace(go.Scatter(x=future_x, y=hw, name="Holt-Winters", line=dict(color='blue', dash='dot')))
+    fig.add_trace(go.Scatter(x=future_x, y=hw, name="Holt-Winters (ETS)", line=dict(color='blue', dash='dot')))
     fig.add_trace(go.Scatter(x=future_x, y=sarima, name="SARIMA Proxy", line=dict(color='green', dash='dot')))
     
-    fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=20), title="Advanced Forecasting (ETS/SARIMA)")
+    fig.update_layout(
+        height=250, margin=dict(l=10,r=10,t=30,b=20), 
+        title=dict(text="Advanced Forecasting Models", font=dict(size=12, color=THEME['text_muted'])),
+        xaxis_title="Time Steps", yaxis_title="MAP [mmHg]"
+    )
     return fig
 
 # ==========================================
@@ -597,7 +695,7 @@ def render(d_slice):
         with b1: st.plotly_chart(plot_hemodynamic_profile(d_slice, ix), use_container_width=True, key=f"hemo_{ix}")
         with b2: st.plotly_chart(plot_phase_space(d_slice, ix), use_container_width=True, key=f"phase_{ix}")
         
-        # ZONE E: RESPIRATORY
+        # ZONE E: RESPIRATORY & METABOLIC
         st.markdown('<div class="zone-header">ZONE E: RESPIRATORY & METABOLIC COUPLING</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_vq_scatter(d_slice, ix), use_container_width=True, key=f"vq_{ix}")
 
@@ -608,7 +706,7 @@ def render(d_slice):
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['SpO2'], name="SpO2", line=dict(color=THEME['resp'])), row=3, col=1)
         fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white")
-        fig.update_yaxes(title_text="MAP", row=1, col=1); fig.update_yaxes(title_text="CPO", row=2, col=1); fig.update_yaxes(title_text="SpO2", row=3, col=1)
+        fig.update_yaxes(title_text="MAP [mmHg]", row=1, col=1); fig.update_yaxes(title_text="CPO [W]", row=2, col=1); fig.update_yaxes(title_text="SpO2 [%]", row=3, col=1)
         st.plotly_chart(fig, use_container_width=True, key=f"tele_{ix}")
 
         # ZONE G: SPC
@@ -627,15 +725,15 @@ def render(d_slice):
         st.markdown('<div class="zone-header">ZONE J: DISTRIBUTIONAL SHIFT (WASSERSTEIN)</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_wasserstein(d_slice, ix), use_container_width=True, key=f"wass_{ix}")
 
-        # ZONE K: MULTIVARIATE SPC (NEW)
+        # ZONE K: MULTIVARIATE SPC
         st.markdown('<div class="zone-header">ZONE K: MULTIVARIATE SPC (HOTELLING / SPE)</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_multivariate_spc(d_slice, ix), use_container_width=True, key=f"mspc_{ix}")
 
-        # ZONE L: ADVANCED CONTROL CHARTS (NEW)
+        # ZONE L: ADVANCED CONTROL
         st.markdown('<div class="zone-header">ZONE L: ADVANCED CONTROL (EWMA / CUSUM / WESTGARD)</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_advanced_control(d_slice, ix), use_container_width=True, key=f"advc_{ix}")
 
-        # ZONE M: ADVANCED FORECASTING (NEW)
+        # ZONE M: ADVANCED FORECASTING
         st.markdown('<div class="zone-header">ZONE M: ADVANCED FORECASTING (HOLT-WINTERS / SARIMA)</div>', unsafe_allow_html=True)
         st.plotly_chart(plot_advanced_forecast(d_slice, ix), use_container_width=True, key=f"advf_{ix}")
 
