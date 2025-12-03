@@ -25,29 +25,18 @@ THEME = {
     "crit": "#ef4444", "warn": "#f59e0b", "ok": "#10b981"
 }
 
-# UPDATED CSS: Uses System Fonts (No External URLs)
 STYLING = """
 <style>
-/* Base Styles using System Fonts */
-.stApp { 
-    background-color: #f8fafc; 
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: #0f172a; 
-}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@500&display=swap');
+.stApp { background-color: #f8fafc; font-family: 'Inter', sans-serif; color: #0f172a; }
 
 /* KPI Card */
 .kpi-card {
     background: white; border: 1px solid #cbd5e1; border-radius: 8px;
     padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); margin-bottom: 8px;
 }
-.kpi-lbl { 
-    font-size: 0.7rem; font-weight: 700; color: #64748b; 
-    text-transform: uppercase; 
-}
-.kpi-val { 
-    font-family: "Courier New", Courier, monospace; 
-    font-size: 1.6rem; font-weight: 700; line-height: 1.1; 
-}
+.kpi-lbl { font-size: 0.7rem; font-weight: 700; color: #64748b; text-transform: uppercase; }
+.kpi-val { font-family: 'JetBrains Mono', monospace; font-size: 1.6rem; font-weight: 700; line-height: 1.1; }
 .kpi-unit { font-size: 0.8rem; color: #94a3b8; margin-left: 2px; }
 
 /* Alert Banner */
@@ -82,7 +71,7 @@ SAFETY_DISCLAIMER = """
 # ==========================================
 
 @dataclass
-class PatientConfig:
+class PhysiologicalParams:
     """
     Centralized parameter store for the Digital Twin.
     Allows for scenario injection and sensitivity analysis.
@@ -108,7 +97,7 @@ class PhysiologyEngine:
     """
     Advanced 0-D Cardiovascular Model (Windkessel-Baroreflex Coupled).
     """
-    def __init__(self, params: PatientConfig, preload=12.0, contractility=1.0, afterload=1.0):
+    def __init__(self, params: PhysiologicalParams, preload=12.0, contractility=1.0, afterload=1.0):
         self.p = params
         self.preload = float(preload)
         self.contractility = float(contractility)
@@ -211,7 +200,7 @@ class PhysiologyEngine:
             "Lac_Gen": lac_gen, "Preload_Status": eff_pre
         }
 
-def simulate_clinical_data(params: PatientConfig, mins=720, seed=42):
+def simulate_clinical_data(params: PhysiologicalParams, mins=720, seed=42):
     """
     Runs full simulation. Optimized with pre-calculated vectors.
     """
@@ -287,8 +276,9 @@ def predict_response_uncertainty(base_engine, current_sev, current_lac, horizon=
     # Scenarios: Name -> Engine Modifier
     scenarios = {
         "Natural": lambda e: None,
-        "Fluid": lambda e: setattr(e, 'preload_base', e.preload_base * 1.4),
-        "Pressor": lambda e: setattr(e, 'afterload_base', e.afterload_base * 1.5)
+        # Correctly referencing attributes 'preload' and 'afterload'
+        "Fluid": lambda e: setattr(e, 'preload', e.preload * 1.4),
+        "Pressor": lambda e: setattr(e, 'afterload', e.afterload * 1.5)
     }
     
     for name, mod_func in scenarios.items():
@@ -327,7 +317,7 @@ class ChartFactory:
         layout = go.Layout(
             template="plotly_white", margin=dict(l=10, r=10, t=30 if title else 10, b=10),
             height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="sans-serif", color=THEME["text"])
+            font=dict(family="Inter, sans-serif", color=THEME["text"])
         )
         if title: layout.title = dict(text=f"<b>{title}</b>", font=dict(size=14))
         return layout
@@ -471,8 +461,12 @@ with st.sidebar:
     
     st.markdown("### ⚙️ Physiology")
     shock = st.selectbox("Shock Type", ["Septic", "Cardiogenic", "Hypovolemic", "Obstructive"])
-    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5)
+    hb = st.slider("Hemoglobin", 7.0, 15.0, 12.0, 0.5, help="Affects DO2I calculation")
     map_target = st.number_input("Target MAP (mmHg)", 55, 85, 65)
+    
+    if st.button("Refresh Simulation"):
+        st.cache_data.clear()
+        st.rerun()
     
     config = PatientConfig(shock_type=shock, hb=hb, map_target=map_target)
 
