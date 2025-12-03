@@ -44,17 +44,19 @@ STYLING = f"""
 """
 
 class CONSTANTS:
+    # High-Fidelity Pharmacokinetics (Max Effect at typical high dose)
     DRUG_PK = {
-        'norepi': {'svr': 900, 'map': 28, 'co': 0.6, 'tau': 2.0, 'tol': 1440},
-        'vaso':   {'svr': 700, 'map': 18, 'co': 0.0, 'tau': 5.0, 'tol': 2880},
-        'dobu':   {'svr': -350, 'map': 2, 'co': 2.8, 'hr': 18, 'tau': 3.0, 'tol': 720},
-        'bb':     {'svr': 50, 'map': -8, 'co': -1.2, 'hr': -22, 'tau': 4.0, 'tol': 5000}
+        'norepi': {'svr': 2500, 'map': 120, 'co': 0.8, 'tau': 2.0, 'tol': 2880}, 
+        'vaso':   {'svr': 4000, 'map': 150, 'co': -0.2, 'tau': 5.0, 'tol': 2880}, 
+        'dobu':   {'svr': -600, 'map': 5, 'co': 4.5, 'hr': 25, 'tau': 3.0, 'tol': 720}, 
+        'bb':     {'svr': 50, 'map': -15, 'co': -2.0, 'hr': -35, 'tau': 4.0, 'tol': 5000}
     }
     ATM_PRESSURE = 760; H2O_PRESSURE = 47; R_QUOTIENT = 0.8; MAX_PAO2 = 600
-    LAC_PROD_THRESH = 380; LAC_CLEAR_RATE = 0.04; VCO2_CONST = 200
+    LAC_PROD_THRESH = 330 # Critical DO2I (mL/min/m2)
+    LAC_CLEAR_RATE = 0.05; VCO2_CONST = 130 # mL/min/m2
 
 # ==========================================
-# 2. DYNAMICS MODULES (LEVEL 6 ARCHITECTURE)
+# 2. DYNAMICS MODULES (PHYSICS ENGINE)
 # ==========================================
 
 class AutonomicDynamics:
@@ -63,6 +65,7 @@ class AutonomicDynamics:
         def noise(n, start, end, vol, s):
             np.random.seed(s)
             t = np.linspace(0, 1, n)
+            # Stress factor: Volatility increases as physiology decompensates
             stress = 1.0 + (max(0, start - end) / 20.0)
             dW = np.random.normal(0, np.sqrt(1/n), n)
             pink = np.convolve(np.random.normal(0, 0.5, n), np.ones(8)/8, mode='same')
@@ -85,6 +88,7 @@ class PharmacokineticsEngine:
             pk = CONSTANTS.DRUG_PK[drug_name]
             if param not in pk: return np.zeros(mins)
             max_eff = dose * pk[param]
+            # Wash-in (1-exp) and Tolerance (exp decay)
             return max_eff * (1 - np.exp(-t_vec / pk['tau'])) * np.exp(-t_vec / pk['tol'])
 
         d_svr = calculate_effect('norepi', drugs['norepi'], 'svr') + calculate_effect('vaso', drugs['vaso'], 'svr') + calculate_effect('dobu', drugs['dobu'], 'svr')
@@ -97,27 +101,48 @@ class PharmacokineticsEngine:
 class RespiratoryDynamics:
     @staticmethod
     def simulate_gas_exchange(fio2, rr, shunt_base, peep, mins, copd_factor):
+        # Dead Space and Alveolar Ventilation
         vd_vt = 0.3 * copd_factor + (0.1 if copd_factor > 1.0 else 0)
         va = np.maximum((rr * 0.5) * (1 - vd_vt), 2.0)
+        
+        # PaCO2
         paco2 = (CONSTANTS.VCO2_CONST * 0.863) / va
+        
+        # Alveolar Gas Equation
         p_ideal = np.clip((fio2 * (CONSTANTS.ATM_PRESSURE - CONSTANTS.H2O_PRESSURE)) - (paco2 / CONSTANTS.R_QUOTIENT), 0, CONSTANTS.MAX_PAO2)
+        
+        # Shunt with PEEP Recruitment
         shunt_eff = shunt_base * np.exp(-0.06 * peep)
         pao2 = p_ideal * (1 - shunt_eff)
-        spo2 = 100 / (1 + (23400 / (np.maximum(pao2, 0.1)**3 + 150*np.maximum(pao2, 0.1))))
+        
+        # SpO2 Sigmoid (Severinghaus)
+        pao2_safe = np.maximum(pao2, 0.1)
+        spo2 = 100 / (1 + (23400 / (pao2_safe**3 + 150*pao2_safe)))
+        
         return pao2, paco2, spo2, vd_vt
 
 class MetabolicDynamics:
     @staticmethod
-    def simulate_metabolism(ci, hb, spo2, mins):
+    def simulate_metabolism(ci, hb, spo2, mins, vo2_stress_factor):
+        # Oxygen Delivery Index
         do2i = ci * hb * 1.34 * (spo2/100) * 10
-        vo2i = np.full(mins, 125.0)
-        o2er = vo2i / np.maximum(do2i, 1.0)
+        # Oxygen Consumption Index
+        vo2i = np.full(mins, 125.0 * vo2_stress_factor)
+        # Extraction Ratio
+        o2er = vo2i / np.maximum(do2i, 10.0)
+        
         lactate = np.zeros(mins)
         lac_curr = 1.0
-        prod = np.where((do2i < CONSTANTS.LAC_PROD_THRESH) | (o2er > 0.45), 0.15, 0.0)
+        
+        # Production: Increases if critical DO2I breach or high extraction
+        prod = np.where((do2i < CONSTANTS.LAC_PROD_THRESH) | (o2er > 0.50), 0.2, 0.0)
+        
         for i in range(mins):
-            lac_curr = max(0.5, lac_curr + prod[i] - (CONSTANTS.LAC_CLEAR_RATE * (ci[i] / 3.0)))
+            # Clearance: Proportional to liver perfusion (CI)
+            clear = CONSTANTS.LAC_CLEAR_RATE * (ci[i] / 2.5)
+            lac_curr = max(0.6, lac_curr + prod[i] - clear)
             lactate[i] = lac_curr
+            
         return do2i, vo2i, o2er, lactate
 
 # ==========================================
@@ -128,25 +153,35 @@ class AI_Services:
     @staticmethod
     def predict_shock_bayes(row):
         profiles = {
-            "Cardiogenic": {"CI": 1.8, "SVRI": 2400, "Prior": 0.2},
-            "Distributive": {"CI": 4.5, "SVRI": 800,  "Prior": 0.3},
-            "Hypovolemic": {"CI": 2.0, "SVRI": 2800, "Prior": 0.2},
-            "Stable":      {"CI": 3.0, "SVRI": 1800, "Prior": 0.3}
+            "Cardiogenic": {"CI": 1.8, "SVRI": 2800, "Prior": 0.2},
+            "Distributive": {"CI": 5.0, "SVRI": 800,  "Prior": 0.3},
+            "Hypovolemic": {"CI": 2.0, "SVRI": 3000, "Prior": 0.2},
+            "Stable":      {"CI": 3.2, "SVRI": 1900, "Prior": 0.3}
         }
         scores = {}
         total = 0
         for name, p in profiles.items():
-            like = norm.pdf(row['CI'], p['CI'], 0.8) * norm.pdf(row['SVRI'], p['SVRI'], 400)
+            like = norm.pdf(row['CI'], p['CI'], 1.0) * norm.pdf(row['SVRI'], p['SVRI'], 500)
             scores[name] = like * p['Prior']
             total += scores[name]
         return {k: (v/total)*100 for k, v in scores.items()} if total > 0 else {k:25 for k in profiles}
 
     @staticmethod
     def rl_advisor(row, drugs):
+        # Actor-Critic Proxy Logic
         if row['MAP'] < 65:
-            if row['CI'] < 2.2: return "Titrate Dobutamine +2.5", 85
-            else: return ("Increase Norepi +0.05" if row['SVRI']<1000 else "Give Fluids"), 90
-        return "Maintain Current", 99
+            if row['CI'] < 2.2: 
+                if drugs['dobu'] < 5: return "Titrate Dobutamine +2.5", 88
+                else: return "Consider Mechanical Support", 75
+            else: 
+                if row['SVRI'] < 1200:
+                    if drugs['norepi'] < 0.5: return "Increase Norepi +0.05", 92
+                    else: return "Add Vasopressin 0.03", 85
+                else:
+                    return "Fluid Bolus 500mL", 80
+        else:
+            if drugs['norepi'] > 0 and row['MAP'] > 75: return "Wean Norepi -0.05", 85
+        return "Maintain Current Therapy", 98
 
     @staticmethod
     def detect_anomalies(df):
@@ -168,11 +203,11 @@ class AI_Services:
             X = scaler.fit_transform(df[['CI','SVRI','Lactate']].iloc[-60:])
             km = KMeans(3, random_state=42).fit(X)
             ctrs = scaler.inverse_transform(km.cluster_centers_)
-            return [f"C{i+1}: CI={c[0]:.1f}, SVR={c[1]:.0f}" for i,c in enumerate(ctrs)]
+            return [f"C{i+1}: CI={c[0]:.1f}, SVR={c[1]:.0f}, Lac={c[2]:.1f}" for i,c in enumerate(ctrs)]
         except: return ["Insufficient Data"]
 
 # ==========================================
-# 4. SIMULATOR
+# 4. SIMULATOR ORCHESTRATOR
 # ==========================================
 class PatientSimulator:
     def __init__(self, mins=360):
@@ -181,21 +216,37 @@ class PatientSimulator:
         
     def run(self, case_id, drugs, fluids, bsa, peep):
         cases = {
-            "65M Post-CABG": {'ci':(2.2,1.8), 'map':(75,55), 'svri':(1800,1400), 'hr':(85,95), 'shunt':0.10, 'copd':1.0},
-            "24F Septic Shock": {'ci':(4.5,5.5), 'map':(65,45), 'svri':(1000,600), 'hr':(110,140), 'shunt':0.15, 'copd':1.0},
-            "82M HFpEF Sepsis": {'ci':(2.0,1.9), 'map':(85,60), 'svri':(2200,1600), 'hr':(90,110), 'shunt':0.20, 'copd':1.5},
-            "50M Trauma": {'ci':(3.0,1.5), 'map':(70,40), 'svri':(2500,3000), 'hr':(100,150), 'shunt':0.05, 'copd':1.0}
+            "65M Post-CABG": {
+                'ci':(2.4, 1.8), 'map':(75, 55), 'svri':(2000, 1600), 
+                'hr':(85, 95), 'shunt':0.10, 'copd':1.0, 'vo2_stress': 1.0
+            },
+            "24F Septic Shock": {
+                'ci':(3.5, 5.5), 'map':(65, 45), 'svri':(1200, 500), 
+                'hr':(110, 140), 'shunt':0.15, 'copd':1.0, 'vo2_stress': 1.4
+            },
+            "82M HFpEF Sepsis": {
+                'ci':(2.2, 1.8), 'map':(85, 55), 'svri':(2400, 1800), 
+                'hr':(80, 110), 'shunt':0.20, 'copd':1.5, 'vo2_stress': 1.1
+            },
+            "50M Trauma": {
+                'ci':(3.0, 1.5), 'map':(70, 40), 'svri':(2500, 3200), 
+                'hr':(100, 150), 'shunt':0.05, 'copd':1.0, 'vo2_stress': 0.9
+            }
         }
         p = cases[case_id]
         seed = len(case_id)+42
         
         hr, map_r, ci_r, svri_r, rr = AutonomicDynamics.generate_vitals(self.mins, p, seed)
         ppv = (20 if "Trauma" in case_id else 12) + (np.sin(self.t/8)*4)
-        ci_fluid = (fluids/500) * (0.4 if np.mean(ppv)>13 else 0.05)
+        
+        # Starling Curve (Fluid Responsiveness)
+        ci_fluid = (fluids/500) * (0.5 if np.mean(ppv)>13 else 0.05)
+        
         map_f, ci_f, hr_f, svri_f = PharmacokineticsEngine.apply_pk_pd(map_r, ci_r+ci_fluid, hr, svri_r, drugs, self.mins)
         pao2, paco2, spo2, vd_vt = RespiratoryDynamics.simulate_gas_exchange(drugs['fio2'], rr, p['shunt'], peep, self.mins, p['copd'])
+        
         hb = 8.0 if "Trauma" in case_id else 12.0
-        do2i, vo2i, o2er, lactate = MetabolicDynamics.simulate_metabolism(ci_f, hb, spo2, self.mins)
+        do2i, vo2i, o2er, lactate = MetabolicDynamics.simulate_metabolism(ci_f, hb, spo2, self.mins, p['vo2_stress'])
         
         df = pd.DataFrame({
             "Time": self.t, "HR": hr_f, "MAP": map_f, "CI": ci_f, "SVRI": svri_f,
@@ -207,9 +258,9 @@ class PatientSimulator:
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS (UPDATED WITH LABELS)
+# 5. VISUALIZATION FUNCTIONS
 # ==========================================
-def plot_sparkline(data, color):
+def plot_sparkline(data, color, key):
     fig = px.line(x=np.arange(len(data)), y=data)
     fig.update_traces(line_color=color, line_width=2)
     fig.update_layout(showlegend=False, xaxis_visible=False, yaxis_visible=False, margin=dict(l=0,r=0,t=0,b=0), height=35)
@@ -247,7 +298,9 @@ def plot_chaos_attractor(df):
     return fig
 
 def plot_spectral_analysis(df):
-    f, Pxx = welch(df['HR'].iloc[-120:].to_numpy(), fs=1/60)
+    # Fix: convert to numpy to avoid scipy KeyError
+    data = df['HR'].iloc[-120:].to_numpy()
+    f, Pxx = welch(data, fs=1/60)
     fig = px.line(x=f, y=Pxx, title="Spectral HRV Analysis")
     fig.add_vline(x=0.04, line_dash="dot", annotation_text="LF"); fig.add_vline(x=0.15, line_dash="dot", annotation_text="HF")
     fig.update_layout(
@@ -315,12 +368,20 @@ with st.sidebar:
     res_mins = st.select_slider("Resolution", [60, 180, 360, 720], value=360)
     case_id = st.selectbox("Profile", ["65M Post-CABG", "24F Septic Shock", "82M HFpEF Sepsis", "50M Trauma"])
     
+    # Calculate BSA dynamically
+    col_bio1, col_bio2 = st.columns(2)
+    with col_bio1: height = st.number_input("Height (cm)", 150, 200, 175)
+    with col_bio2: weight = st.number_input("Weight (kg)", 50, 150, 80)
+    bsa = np.sqrt((height * weight) / 3600)
+    st.caption(f"Calculated BSA: {bsa:.2f} m²")
+    
     with st.form("drugs"):
+        st.markdown("**Infusion Pumps**")
         c1, c2 = st.columns(2)
-        norepi = c1.number_input("Norepi", 0.0, 2.0, 0.0, 0.05)
-        vaso = c1.number_input("Vaso", 0.0, 0.1, 0.0, 0.01)
-        dobu = c2.number_input("Dobutamine", 0.0, 10.0, 0.0, 0.5)
-        bb = c2.number_input("Esmolol", 0.0, 1.0, 0.0, 0.1)
+        norepi = c1.number_input("Norepi (mcg/kg/min)", 0.0, 2.0, 0.0, 0.05, format="%.2f")
+        vaso = c1.number_input("Vaso (U/min)", 0.0, 0.1, 0.0, 0.01, format="%.2f")
+        dobu = c2.number_input("Dobutamine (mcg)", 0.0, 10.0, 0.0, 0.5, format="%.1f")
+        bb = c2.number_input("Esmolol (mg/kg)", 0.0, 1.0, 0.0, 0.1, format="%.1f")
         fio2 = st.slider("FiO2", 0.21, 1.0, 0.4); peep = st.slider("PEEP", 0, 20, 5)
         st.form_submit_button("Update Model")
     
@@ -329,7 +390,7 @@ with st.sidebar:
 
 sim = PatientSimulator(mins=res_mins)
 drugs = {'norepi':norepi, 'vaso':vaso, 'dobu':dobu, 'bb':bb, 'fio2':fio2}
-df = sim.run(case_id, drugs, st.session_state['fluids'], 1.9, peep)
+df = sim.run(case_id, drugs, st.session_state['fluids'], bsa, peep)
 df = AI_Services.detect_anomalies(df)
 probs = AI_Services.predict_shock_bayes(df.iloc[-1])
 sugg, conf = AI_Services.rl_advisor(df.iloc[-1], drugs)
@@ -362,7 +423,7 @@ def render(d_slice):
         with c2: 
             st.info(f"🤖 **RL Agent:** {sugg} ({conf}%)")
             st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90), use_container_width=True, key=f"fan_{ix}")
-        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, 1.9, peep), use_container_width=True, key=f"count_{ix}")
+        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, bsa, peep), use_container_width=True, key=f"count_{ix}")
 
         # ZONE B: METRICS
         st.markdown('<div class="zone-header">ZONE B: PHYSIOLOGIC METRICS (60m)</div>', unsafe_allow_html=True)
@@ -373,7 +434,7 @@ def render(d_slice):
         for i, (l, v, c) in enumerate(metrics):
             with cols[i]:
                 st.metric(l, f"{v:.1f}")
-                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c), use_container_width=True, key=f"spark_{i}_{ix}")
+                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c, key=f"spark_{i}_{ix}"), use_container_width=True, key=f"spark_chart_{i}_{ix}")
 
         # ZONE C: ADVANCED PHYSICS (Restored)
         st.markdown('<div class="zone-header">ZONE C: PHASE SPACE & COMPLEXITY</div>', unsafe_allow_html=True)
@@ -408,5 +469,4 @@ if live_mode:
         time.sleep(0.1)
 else:
     render(df)
-
 st.caption("TITAN L6 | Bayesian Inference, RL Policy, IsolationForest Anomaly Detection, Pharmacokinetic Time-Constants.")
