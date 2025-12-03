@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from scipy.signal import welch
-from scipy.stats import norm
+from scipy.stats import norm, multivariate_normal
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import IsolationForest
@@ -45,6 +45,7 @@ STYLING = f"""
 
 class CONSTANTS:
     # High-Fidelity Pharmacokinetics (Max Effect at typical high dose)
+    # Norepi 1.0mcg/kg/min -> +2500 SVRI, +120 MAP
     DRUG_PK = {
         'norepi': {'svr': 2500, 'map': 120, 'co': 0.8, 'tau': 2.0, 'tol': 2880}, 
         'vaso':   {'svr': 4000, 'map': 150, 'co': -0.2, 'tau': 5.0, 'tol': 2880}, 
@@ -54,6 +55,7 @@ class CONSTANTS:
     ATM_PRESSURE = 760; H2O_PRESSURE = 47; R_QUOTIENT = 0.8; MAX_PAO2 = 600
     LAC_PROD_THRESH = 330 # Critical DO2I (mL/min/m2)
     LAC_CLEAR_RATE = 0.05; VCO2_CONST = 130 # mL/min/m2
+    EPSILON = 1e-5 # Guardrail for zero division
 
 # ==========================================
 # 2. DYNAMICS MODULES (PHYSICS ENGINE)
@@ -72,11 +74,12 @@ class AutonomicDynamics:
             B = start + np.cumsum(dW) - t * (np.cumsum(dW)[-1] - (end - start))
             return B + (pink * vol * stress)
 
-        hr = noise(mins, p['hr'][0], p['hr'][1], 1.5, seed)
-        map_r = noise(mins, p['map'][0], p['map'][1], 1.2, seed+1)
-        ci = noise(mins, p['ci'][0], p['ci'][1], 0.2, seed+2)
-        svri = noise(mins, p['svri'][0], p['svri'][1], 100, seed+3)
-        rr = noise(mins, 16, 28, 2.0, seed+4)
+        # Guardrails: Prevent negative physiology
+        hr = np.maximum(noise(mins, p['hr'][0], p['hr'][1], 1.5, seed), 20.0)
+        map_r = np.maximum(noise(mins, p['map'][0], p['map'][1], 1.2, seed+1), 20.0)
+        ci = np.maximum(noise(mins, p['ci'][0], p['ci'][1], 0.2, seed+2), 0.5)
+        svri = np.maximum(noise(mins, p['svri'][0], p['svri'][1], 100, seed+3), 100.0)
+        rr = np.maximum(noise(mins, 16, 28, 2.0, seed+4), 4.0)
         return hr, map_r, ci, svri, rr
 
 class PharmacokineticsEngine:
@@ -84,6 +87,7 @@ class PharmacokineticsEngine:
     def apply_pk_pd(map_base, ci_base, hr_base, svri_base, drugs, mins):
         t_vec = np.arange(mins)
         def calculate_effect(drug_name, dose, param):
+            dose = max(0.0, dose) # Guardrail
             if dose <= 0: return np.zeros(mins)
             pk = CONSTANTS.DRUG_PK[drug_name]
             if param not in pk: return np.zeros(mins)
@@ -96,14 +100,22 @@ class PharmacokineticsEngine:
         d_co  = calculate_effect('norepi', drugs['norepi'], 'co') + calculate_effect('dobu', drugs['dobu'], 'co') + calculate_effect('bb', drugs['bb'], 'co')
         d_hr  = calculate_effect('dobu', drugs['dobu'], 'hr') + calculate_effect('bb', drugs['bb'], 'hr')
 
-        return (map_base + d_map), (ci_base + d_co), (hr_base + d_hr), (svri_base + d_svr)
+        return (
+            np.maximum(map_base + d_map, 10.0), 
+            np.maximum(ci_base + d_co, 0.1), 
+            np.maximum(hr_base + d_hr, 30.0), 
+            np.maximum(svri_base + d_svr, 50.0)
+        )
 
 class RespiratoryDynamics:
     @staticmethod
     def simulate_gas_exchange(fio2, rr, shunt_base, peep, mins, copd_factor):
+        fio2 = np.clip(fio2, 0.21, 1.0)
+        rr = np.maximum(rr, 4.0)
+        
         # Dead Space and Alveolar Ventilation
-        vd_vt = 0.3 * copd_factor + (0.1 if copd_factor > 1.0 else 0)
-        va = np.maximum((rr * 0.5) * (1 - vd_vt), 2.0)
+        vd_vt = np.clip(0.3 * copd_factor + (0.1 if copd_factor > 1.0 else 0), 0.1, 0.8)
+        va = np.maximum((rr * 0.5) * (1 - vd_vt), 0.5) # Prevent zero division
         
         # PaCO2
         paco2 = (CONSTANTS.VCO2_CONST * 0.863) / va
@@ -115,7 +127,7 @@ class RespiratoryDynamics:
         shunt_eff = shunt_base * np.exp(-0.06 * peep)
         pao2 = p_ideal * (1 - shunt_eff)
         
-        # SpO2 Sigmoid (Severinghaus)
+        # SpO2 Sigmoid (Severinghaus) with safety clipping
         pao2_safe = np.maximum(pao2, 0.1)
         spo2 = 100 / (1 + (23400 / (pao2_safe**3 + 150*pao2_safe)))
         
@@ -124,12 +136,14 @@ class RespiratoryDynamics:
 class MetabolicDynamics:
     @staticmethod
     def simulate_metabolism(ci, hb, spo2, mins, vo2_stress_factor):
+        ci_safe = np.maximum(ci, 0.1)
+        
         # Oxygen Delivery Index
-        do2i = ci * hb * 1.34 * (spo2/100) * 10
+        do2i = ci_safe * hb * 1.34 * (spo2/100) * 10
         # Oxygen Consumption Index
         vo2i = np.full(mins, 125.0 * vo2_stress_factor)
         # Extraction Ratio
-        o2er = vo2i / np.maximum(do2i, 10.0)
+        o2er = vo2i / np.maximum(do2i, 1.0)
         
         lactate = np.zeros(mins)
         lac_curr = 1.0
@@ -139,36 +153,58 @@ class MetabolicDynamics:
         
         for i in range(mins):
             # Clearance: Proportional to liver perfusion (CI)
-            clear = CONSTANTS.LAC_CLEAR_RATE * (ci[i] / 2.5)
+            clear = CONSTANTS.LAC_CLEAR_RATE * (ci_safe[i] / 2.5)
             lac_curr = max(0.6, lac_curr + prod[i] - clear)
             lactate[i] = lac_curr
             
         return do2i, vo2i, o2er, lactate
 
 # ==========================================
-# 3. AI & ANALYTICS LAYERS
+# 3. AI & ANALYTICS LAYERS (OPTIMIZED)
 # ==========================================
 
 class AI_Services:
     @staticmethod
     def predict_shock_bayes(row):
-        profiles = {
-            "Cardiogenic": {"CI": 1.8, "SVRI": 2800, "Prior": 0.2},
-            "Distributive": {"CI": 5.0, "SVRI": 800,  "Prior": 0.3},
-            "Hypovolemic": {"CI": 2.0, "SVRI": 3000, "Prior": 0.2},
-            "Stable":      {"CI": 3.2, "SVRI": 1900, "Prior": 0.3}
+        """
+        Multivariate Bayesian Inference using Covariance Matrices.
+        """
+        means = {
+            "Cardiogenic": [1.8, 2800],
+            "Distributive": [5.0, 800],
+            "Hypovolemic": [2.0, 3000],
+            "Stable": [3.2, 1900]
         }
+        # Covariance matrices: [Var(CI), Cov(CI,SVR)], [Cov(SVR,CI), Var(SVR)]
+        # Negative correlation implies as CI goes up, SVR usually goes down (physiologic)
+        covs = {
+            "Cardiogenic": [[0.5, -100], [-100, 150000]],
+            "Distributive": [[1.0, -200], [-200, 100000]],
+            "Hypovolemic": [[0.4, -50], [-50, 200000]],
+            "Stable": [[0.6, -150], [-150, 150000]]
+        }
+        priors = {"Cardiogenic": 0.2, "Distributive": 0.3, "Hypovolemic": 0.2, "Stable": 0.3}
+        
         scores = {}
         total = 0
-        for name, p in profiles.items():
-            like = norm.pdf(row['CI'], p['CI'], 1.0) * norm.pdf(row['SVRI'], p['SVRI'], 500)
-            scores[name] = like * p['Prior']
-            total += scores[name]
-        return {k: (v/total)*100 for k, v in scores.items()} if total > 0 else {k:25 for k in profiles}
+        x = [row['CI'], row['SVRI']]
+        
+        for name in means:
+            try:
+                like = multivariate_normal.pdf(x, mean=means[name], cov=covs[name])
+                scores[name] = like * priors[name]
+                total += scores[name]
+            except:
+                scores[name] = 0.0
+                
+        if total < 1e-9: return {k: 25.0 for k in means}
+        return {k: (v/total)*100 for k, v in scores.items()}
 
     @staticmethod
     def rl_advisor(row, drugs):
-        # Actor-Critic Proxy Logic
+        # Guardrail for NaNs
+        if pd.isna(row['MAP']) or pd.isna(row['CI']): return "Data Invalid", 0
+        
         if row['MAP'] < 65:
             if row['CI'] < 2.2: 
                 if drugs['dobu'] < 5: return "Titrate Dobutamine +2.5", 88
@@ -185,26 +221,32 @@ class AI_Services:
 
     @staticmethod
     def detect_anomalies(df):
+        # Handle NaNs before fitting
+        X = df[['MAP','CI','SVRI']].fillna(method='bfill').fillna(0)
         iso = IsolationForest(contamination=0.05, random_state=42)
-        df['anomaly'] = iso.fit_predict(df[['MAP','CI','SVRI']].fillna(0))
+        df['anomaly'] = iso.fit_predict(X)
         return df
 
     @staticmethod
     def monte_carlo_forecast(df, target='MAP', n_sims=50):
         curr = df[target].iloc[-1]
-        vol = np.std(df[target].iloc[-30:])
+        hist = df[target].iloc[-30:]
+        vol = np.std(hist) if len(hist) > 1 else 1.0
+        vol = max(vol, 0.5) # Minimum volatility guardrail
         paths = np.array([curr + np.cumsum(np.random.normal(0, vol, 30)) for _ in range(n_sims)])
         return np.percentile(paths, 10, axis=0), np.percentile(paths, 50, axis=0), np.percentile(paths, 90, axis=0)
     
     @staticmethod
     def inverse_centroids(df):
+        """Cached KMeans computation."""
         try:
+            if len(df) < 10: return ["Insufficient Data"]
             scaler = StandardScaler()
-            X = scaler.fit_transform(df[['CI','SVRI','Lactate']].iloc[-60:])
-            km = KMeans(3, random_state=42).fit(X)
+            X = scaler.fit_transform(df[['CI','SVRI','Lactate']].fillna(0))
+            km = KMeans(3, random_state=42, n_init=10).fit(X)
             ctrs = scaler.inverse_transform(km.cluster_centers_)
             return [f"C{i+1}: CI={c[0]:.1f}, SVR={c[1]:.0f}, Lac={c[2]:.1f}" for i,c in enumerate(ctrs)]
-        except: return ["Insufficient Data"]
+        except: return ["Calculation Error"]
 
 # ==========================================
 # 4. SIMULATOR ORCHESTRATOR
@@ -254,11 +296,11 @@ class PatientSimulator:
             "Lactate": lactate, "SpO2": spo2, "PaO2": pao2, "PaCO2": paco2, "RR": rr,
             "DO2I": do2i, "VO2I": vo2i, "O2ER": o2er, "Vd/Vt": np.full(self.mins, vd_vt),
             "CPO": (map_f * (ci_f * bsa)) / 451
-        })
+        }).fillna(0)
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS
+# 5. VISUALIZATION FUNCTIONS (KEYS ENABLED)
 # ==========================================
 def plot_sparkline(data, color, key):
     fig = px.line(x=np.arange(len(data)), y=data)
@@ -266,7 +308,7 @@ def plot_sparkline(data, color, key):
     fig.update_layout(showlegend=False, xaxis_visible=False, yaxis_visible=False, margin=dict(l=0,r=0,t=0,b=0), height=35)
     return fig
 
-def plot_bayes_bars(probs):
+def plot_bayes_bars(probs, key):
     fig = go.Figure(go.Bar(x=list(probs.values()), y=list(probs.keys()), orientation='h', marker=dict(color=[THEME['hemo'], THEME['crit'], THEME['warn'], THEME['ok']])))
     fig.update_layout(
         margin=dict(l=0,r=0,t=0,b=0), height=100, 
@@ -275,7 +317,7 @@ def plot_bayes_bars(probs):
     )
     return fig
 
-def plot_3d_attractor(df):
+def plot_3d_attractor(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure(data=[go.Scatter3d(x=recent['CPO'], y=recent['SVRI'], z=recent['Lactate'], mode='lines+markers', marker=dict(size=3, color=recent.index, colorscale='Viridis'), line=dict(width=2))])
     fig.update_layout(
@@ -288,8 +330,9 @@ def plot_3d_attractor(df):
     )
     return fig
 
-def plot_chaos_attractor(df):
-    rr = 60000 / df['HR'].iloc[-120:]
+def plot_chaos_attractor(df, key):
+    hr_safe = np.maximum(df['HR'].iloc[-120:], 1.0)
+    rr = 60000 / hr_safe
     fig = go.Figure(go.Scatter(x=rr.iloc[:-1], y=rr.iloc[1:], mode='markers', marker=dict(color='teal', size=4, opacity=0.6), name="R-R Interval"))
     fig.update_layout(
         title="Chaos (Poincaré Plot)", height=200, margin=dict(l=20,r=20,t=30,b=20), 
@@ -297,8 +340,8 @@ def plot_chaos_attractor(df):
     )
     return fig
 
-def plot_spectral_analysis(df):
-    # Fix: convert to numpy to avoid scipy KeyError
+def plot_spectral_analysis(df, key):
+    # Fix: convert to numpy to avoid scipy slicing KeyError
     data = df['HR'].iloc[-120:].to_numpy()
     f, Pxx = welch(data, fs=1/60)
     fig = px.line(x=f, y=Pxx, title="Spectral HRV Analysis")
@@ -309,7 +352,7 @@ def plot_spectral_analysis(df):
     )
     return fig
 
-def plot_monte_carlo_fan(df, p10, p50, p90):
+def plot_monte_carlo_fan(df, p10, p50, p90, key):
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=np.arange(30), y=df['MAP'].iloc[-30:], name="History", line=dict(color=THEME['text_main'])))
     fx = np.arange(30, 60)
@@ -321,7 +364,7 @@ def plot_monte_carlo_fan(df, p10, p50, p90):
     )
     return fig
 
-def plot_hemodynamic_profile(df):
+def plot_hemodynamic_profile(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
     fig.add_hline(y=2000, line_dash="dot", annotation_text="Vasoconstriction"); fig.add_vline(x=2.2, line_dash="dot", annotation_text="Low Flow")
@@ -332,7 +375,7 @@ def plot_hemodynamic_profile(df):
     )
     return fig
 
-def plot_phase_space(df):
+def plot_phase_space(df, key):
     recent = df.iloc[-60:]
     fig = go.Figure()
     fig.add_shape(type="rect", x0=0, x1=0.6, y0=2, y1=15, fillcolor="rgba(255,0,0,0.1)", line_width=0)
@@ -343,7 +386,7 @@ def plot_phase_space(df):
     )
     return fig
 
-def plot_counterfactual(df, drugs, case, bsa, peep):
+def plot_counterfactual(df, drugs, case, bsa, peep, key):
     sim = PatientSimulator(60)
     base = {'norepi':0, 'vaso':0, 'dobu':0, 'bb':0, 'fio2':0.21}
     df_b = sim.run(case, base, 0, bsa, peep)
@@ -388,13 +431,17 @@ with st.sidebar:
     if st.button("💧 Bolus 500mL"): st.session_state['fluids'] += 500
     live_mode = st.checkbox("🔴 LIVE MODE")
 
+# --- SIMULATION ORCHESTRATION ---
 sim = PatientSimulator(mins=res_mins)
 drugs = {'norepi':norepi, 'vaso':vaso, 'dobu':dobu, 'bb':bb, 'fio2':fio2}
 df = sim.run(case_id, drugs, st.session_state['fluids'], bsa, peep)
+
+# --- ANALYTICS (Computed once) ---
 df = AI_Services.detect_anomalies(df)
 probs = AI_Services.predict_shock_bayes(df.iloc[-1])
 sugg, conf = AI_Services.rl_advisor(df.iloc[-1], drugs)
 p10, p50, p90 = AI_Services.monte_carlo_forecast(df)
+# K-Means optimization: Cached computation
 centroids = AI_Services.inverse_centroids(df)
 
 # --- DASHBOARD RENDERER ---
@@ -419,11 +466,11 @@ def render(d_slice):
         </div>""", unsafe_allow_html=True)
         
         c1, c2, c3 = st.columns([1, 1, 1])
-        with c1: st.plotly_chart(plot_bayes_bars(probs), use_container_width=True, key=f"bayes_{ix}")
+        with c1: st.plotly_chart(plot_bayes_bars(probs, ix), use_container_width=True, key=f"bayes_{ix}")
         with c2: 
             st.info(f"🤖 **RL Agent:** {sugg} ({conf}%)")
-            st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90), use_container_width=True, key=f"fan_{ix}")
-        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, bsa, peep), use_container_width=True, key=f"count_{ix}")
+            st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90, ix), use_container_width=True, key=f"fan_{ix}")
+        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, bsa, peep, ix), use_container_width=True, key=f"count_{ix}")
 
         # ZONE B: METRICS
         st.markdown('<div class="zone-header">ZONE B: PHYSIOLOGIC METRICS (60m)</div>', unsafe_allow_html=True)
@@ -434,18 +481,18 @@ def render(d_slice):
         for i, (l, v, c) in enumerate(metrics):
             with cols[i]:
                 st.metric(l, f"{v:.1f}")
-                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c, key=f"spark_{i}_{ix}"), use_container_width=True, key=f"spark_chart_{i}_{ix}")
+                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c, ix), use_container_width=True, key=f"spark_{i}_{ix}")
 
-        # ZONE C: ADVANCED PHYSICS (Restored)
+        # ZONE C: ADVANCED PHYSICS
         st.markdown('<div class="zone-header">ZONE C: PHASE SPACE & COMPLEXITY</div>', unsafe_allow_html=True)
         b1, b2, b3 = st.columns(3)
-        with b1: st.plotly_chart(plot_3d_attractor(d_slice), use_container_width=True, key=f"3d_{ix}")
-        with b2: st.plotly_chart(plot_hemodynamic_profile(d_slice), use_container_width=True, key=f"hemo_{ix}")
-        with b3: st.plotly_chart(plot_phase_space(d_slice), use_container_width=True, key=f"phase_{ix}")
+        with b1: st.plotly_chart(plot_3d_attractor(d_slice, ix), use_container_width=True, key=f"3d_{ix}")
+        with b2: st.plotly_chart(plot_hemodynamic_profile(d_slice, ix), use_container_width=True, key=f"hemo_{ix}")
+        with b3: st.plotly_chart(plot_phase_space(d_slice, ix), use_container_width=True, key=f"phase_{ix}")
         
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(plot_chaos_attractor(d_slice), use_container_width=True, key=f"chaos_{ix}")
-        with c2: st.plotly_chart(plot_spectral_analysis(d_slice), use_container_width=True, key=f"spec_{ix}")
+        with c1: st.plotly_chart(plot_chaos_attractor(d_slice, ix), use_container_width=True, key=f"chaos_{ix}")
+        with c2: st.plotly_chart(plot_spectral_analysis(d_slice, ix), use_container_width=True, key=f"spec_{ix}")
 
         # ZONE E: TELEMETRY
         st.markdown('<div class="zone-header">ZONE E: TELEMETRY</div>', unsafe_allow_html=True)
@@ -455,7 +502,6 @@ def render(d_slice):
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['SpO2'], name="SpO2", line=dict(color=THEME['resp'])), row=3, col=1)
         fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white")
         
-        # Telemetry Labels
         fig.update_yaxes(title_text="MAP [mmHg]", row=1, col=1)
         fig.update_yaxes(title_text="CPO [W]", row=2, col=1)
         fig.update_yaxes(title_text="SpO2 [%]", row=3, col=1)
