@@ -207,7 +207,7 @@ class PatientSimulator:
         return df
 
 # ==========================================
-# 5. VISUALIZATION FUNCTIONS (ALL RESTORED)
+# 5. VISUALIZATION FUNCTIONS
 # ==========================================
 def plot_sparkline(data, color):
     fig = px.line(x=np.arange(len(data)), y=data)
@@ -311,6 +311,8 @@ centroids = AI_Services.inverse_centroids(df)
 container = st.empty()
 
 def render(d_slice):
+    # Unique Key Generation based on data length to prevent ID collisions in loop
+    ix = len(d_slice)
     curr = d_slice.iloc[-1]
     anom = "DETECTED" if curr['anomaly'] == -1 else "STABLE"
     
@@ -328,11 +330,11 @@ def render(d_slice):
         </div>""", unsafe_allow_html=True)
         
         c1, c2, c3 = st.columns([1, 1, 1])
-        with c1: st.plotly_chart(plot_bayes_bars(probs), use_container_width=True)
+        with c1: st.plotly_chart(plot_bayes_bars(probs), use_container_width=True, key=f"bayes_{ix}")
         with c2: 
             st.info(f"🤖 **RL Agent:** {sugg} ({conf}%)")
-            st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90), use_container_width=True)
-        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, 1.9, peep), use_container_width=True)
+            st.plotly_chart(plot_monte_carlo_fan(d_slice, p10, p50, p90), use_container_width=True, key=f"fan_{ix}")
+        with c3: st.plotly_chart(plot_counterfactual(d_slice, drugs, case_id, 1.9, peep), use_container_width=True, key=f"count_{ix}")
 
         # ZONE B: METRICS
         st.markdown('<div class="zone-header">ZONE B: PHYSIOLOGIC METRICS (60m)</div>', unsafe_allow_html=True)
@@ -343,18 +345,18 @@ def render(d_slice):
         for i, (l, v, c) in enumerate(metrics):
             with cols[i]:
                 st.metric(l, f"{v:.1f}")
-                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c), use_container_width=True)
+                st.plotly_chart(plot_sparkline(d_slice[l].iloc[-60:], c), use_container_width=True, key=f"spark_{i}_{ix}")
 
         # ZONE C: ADVANCED PHYSICS (Restored)
         st.markdown('<div class="zone-header">ZONE C: PHASE SPACE & COMPLEXITY</div>', unsafe_allow_html=True)
         b1, b2, b3 = st.columns(3)
-        with b1: st.plotly_chart(plot_3d_attractor(d_slice), use_container_width=True)
-        with b2: st.plotly_chart(plot_hemodynamic_profile(d_slice), use_container_width=True)
-        with b3: st.plotly_chart(plot_phase_space(d_slice), use_container_width=True)
+        with b1: st.plotly_chart(plot_3d_attractor(d_slice), use_container_width=True, key=f"3d_{ix}")
+        with b2: st.plotly_chart(plot_hemodynamic_profile(d_slice), use_container_width=True, key=f"hemo_{ix}")
+        with b3: st.plotly_chart(plot_phase_space(d_slice), use_container_width=True, key=f"phase_{ix}")
         
         c1, c2 = st.columns(2)
-        with c1: st.plotly_chart(plot_chaos_attractor(d_slice), use_container_width=True)
-        with c2: st.plotly_chart(plot_spectral_analysis(d_slice), use_container_width=True)
+        with c1: st.plotly_chart(plot_chaos_attractor(d_slice), use_container_width=True, key=f"chaos_{ix}")
+        with c2: st.plotly_chart(plot_spectral_analysis(d_slice), use_container_width=True, key=f"spec_{ix}")
 
         # ZONE E: TELEMETRY
         st.markdown('<div class="zone-header">ZONE E: TELEMETRY</div>', unsafe_allow_html=True)
@@ -363,7 +365,7 @@ def render(d_slice):
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['CPO'], name="CPO", fill='tozeroy', line=dict(color=THEME['info'])), row=2, col=1)
         fig.add_trace(go.Scatter(x=d_slice['Time'], y=d_slice['SpO2'], name="SpO2", line=dict(color=THEME['resp'])), row=3, col=1)
         fig.update_layout(height=400, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=f"tele_{ix}")
 
 if live_mode:
     for i in range(max(10, res_mins-60), res_mins):
