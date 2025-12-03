@@ -31,7 +31,10 @@ THEME = {
     "cpo": "#8b5cf6",       # Violet (Power)
     "dsi": "#ec4899",       # Pink (Diastolic)
     "coupling": "#14b8a6",  # Teal (Efficiency)
-    "fluid": "#3b82f6"      # Blue
+    "fluid": "#3b82f6",     # Blue
+    # Standard Signals
+    "map": "#be185d", "ci": "#059669", "do2": "#7c3aed", 
+    "svr": "#d97706", "hr": "#0284c7"
 }
 
 STYLING = """
@@ -184,7 +187,13 @@ def get_live_data_stream(profile: PatientProfile, hours=6):
     # CO maintains early (Compensation) then crashes
     co_trend = 5.0 + (trend * 1.0) - (trend**3 * 3.0) 
     df["CO"] = co_trend + np.random.normal(0, 0.1, mins)
+    df["CI"] = df["CO"] / profile.bsa
     df["CPO"] = (df["MAP"] * df["CO"]) / 451
+    df["SVR"] = (df["MAP"] - 5) / df["CO"] * 80
+    df["SV"] = df["CO"] * 1000 / df["HR"]
+    df["SVRI"] = df["SVR"] * profile.bsa
+    df["DO2I"] = df["CI"] * profile.hb * 1.34 * 0.96 * 10.0 # Assumed SpO2
+    df["Lactate"] = 1.5 + (trend ** 2) * 3.0
     
     # Elastance (Vasodilation)
     df["Eadyn"] = 1.4 - (trend * 0.9) # Becomes pressure-unresponsive
@@ -221,6 +230,17 @@ def predict_scenarios(engine: DigitalTwinEngine):
 class Visuals:
     
     @staticmethod
+    def _hex_to_rgba(hex_color, opacity=0.1):
+        """Converts Hex to RGBA string"""
+        hex_color = hex_color.lstrip('#')
+        if len(hex_color) == 6:
+            r = int(hex_color[0:2], 16)
+            g = int(hex_color[2:4], 16)
+            b = int(hex_color[4:6], 16)
+            return f"rgba({r},{g},{b},{opacity})"
+        return f"rgba(100,100,100,{opacity})"
+
+    @staticmethod
     def _layout(height=200, title=None):
         layout = go.Layout(
             template="plotly_white", margin=dict(l=10, r=10, t=30 if title else 10, b=10),
@@ -237,10 +257,12 @@ class Visuals:
         data = df.tail(45)
         fig = go.Figure()
         
+        rgba = Visuals._hex_to_rgba(color, 0.1)
+        
         fig.add_trace(go.Scatter(
             x=data["Timestamp"], y=data[col], mode='lines',
             line=dict(color=color, width=2.5), 
-            fill='tozeroy', fillcolor=f"rgba{color[1:-1]},0.1)",
+            fill='tozeroy', fillcolor=rgba,
             hoverinfo='y'
         ))
         
@@ -249,7 +271,9 @@ class Visuals:
             
         fig.update_layout(Visuals._layout(height=50))
         fig.update_xaxes(visible=False)
-        fig.update_yaxes(visible=False, range=[data[col].min()*0.9, data[col].max()*1.1])
+        y_min = data[col].min() * 0.9 if data[col].min() > 0 else 0
+        y_max = data[col].max() * 1.1
+        fig.update_yaxes(visible=False, range=[y_min, y_max])
         return fig
 
     @staticmethod
